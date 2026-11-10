@@ -378,7 +378,8 @@ values ('question-papers', 'question-papers', false, 10485760, array['applicatio
 on conflict (id) do nothing;
 drop policy if exists question_papers_teacher_upload on storage.objects;
 create policy question_papers_teacher_upload on storage.objects for insert to authenticated with check (
-    bucket_id = 'question-papers' and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+    bucket_id = 'question-papers' and (storage.foldername(name))[1] = auth.uid()::text and
+    exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
 );
 drop policy if exists question_papers_owner_read on storage.objects;
 create policy question_papers_owner_read on storage.objects for select to authenticated using (
