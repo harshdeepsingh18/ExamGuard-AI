@@ -1,0 +1,58 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teacher Dashboard | ExamGuard AI</title>
+
+    <link rel="stylesheet"
+    href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+
+<nav class="navbar">
+    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
+</nav>
+
+<section class="dashboard">
+
+    <div class="badge">TEACHER PORTAL</div>
+
+    <h1>Welcome, <span>{{ profile.full_name }}</span></h1>
+
+    <p>Your teacher dashboard is ready.</p>
+
+    <div class="dashboard-grid">
+
+        <div class="card">
+            <div class="card-icon">📄</div>
+            <h3>Upload Question Paper</h3>
+            <p>Upload PDF examination papers.</p>
+            <button class="primary-btn" disabled>Coming Soon</button>
+        </div>
+
+        <div class="card">
+            <div class="card-icon">📝</div>
+            <h3>Manage Exams</h3>
+            <p>Manage your online examinations.</p>
+            <button class="primary-btn" disabled>Coming Soon</button>
+        </div>
+
+        <div class="card">
+            <div class="card-icon">📊</div>
+            <h3>Student Reports</h3>
+            <p>Review examination reports.</p>
+            <button class="primary-btn" disabled>Coming Soon</button>
+        </div>
+
+    </div>
+
+    <br>
+    <a href="/logout" class="primary-btn">Logout</a>
+
+</section>
+
+</body>
+</html>

@@ -1,0 +1,54 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Register | ExamGuard AI</title>
+    <link rel="stylesheet"
+    href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<nav class="navbar">
+    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
+    <a href="/login" class="nav-btn">Login</a>
+</nav>
+
+<section class="login-section">
+    <div class="badge">CREATE YOUR ACCOUNT</div>
+
+    <h1>Join <span>ExamGuard AI</span></h1>
+    <p>Create your account to get started.</p>
+
+    {% if error %}
+        <p style="color:#ff7777">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST" class="auth-form">
+
+        <input type="text" name="full_name"
+               placeholder="Full Name" required>
+
+        <input type="email" name="email"
+               placeholder="Email Address" required>
+
+        <input type="password" name="password"
+               placeholder="Password (minimum 8 characters)"
+               minlength="8" required>
+
+        <select name="role" required>
+            <option value="student">Register as Student</option>
+            <option value="teacher">Request Teacher Account</option>
+        </select>
+
+        <button type="submit" class="primary-btn">
+            Create Account →
+        </button>
+    </form>
+
+    <p>Already registered? <a href="/login" class="back-link">Login</a></p>
+</section>
+
+</body>
+</html>

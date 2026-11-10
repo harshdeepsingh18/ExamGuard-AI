@@ -1,0 +1,56 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Dashboard | ExamGuard AI</title>
+
+    <link rel="stylesheet"
+    href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+
+<nav class="navbar">
+    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
+</nav>
+
+<section class="dashboard">
+
+    <div class="badge">STUDENT PORTAL</div>
+
+    <h1>Welcome, <span>{{ profile.full_name if profile else "Student" }}</span></h1>
+
+    {% if pending_approval %}
+        <p>Your teacher account request is awaiting approval.
+        You currently do not have teacher access.</p>
+    {% else %}
+        <p>Your examination workspace is ready.</p>
+    {% endif %}
+
+    <div class="dashboard-grid">
+
+        <div class="card">
+            <div class="card-icon">📝</div>
+            <h3>My Examinations</h3>
+            <p>View and attend available examinations.</p>
+            <button class="primary-btn" disabled>Coming Soon</button>
+        </div>
+
+        <div class="card">
+            <div class="card-icon">📊</div>
+            <h3>My Results</h3>
+            <p>Check your examination performance.</p>
+            <button class="primary-btn" disabled>Coming Soon</button>
+        </div>
+
+    </div>
+
+    <br>
+    <a href="/logout" class="primary-btn">Logout</a>
+
+</section>
+
+</body>
+</html>

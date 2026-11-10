@@ -1,20 +1,84 @@
+
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>ExamGuard AI</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamGuard AI | Smart Examination</title>
+
+    <link rel="stylesheet"
+    href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 
 <body>
 
-    <h1>Welcome to ExamGuard AI</h1>
+<nav class="navbar">
+    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
 
-    <h2>Smart Online Examination Platform</h2>
+    <div class="nav-links">
+        <a href="/">Home</a>
+        <a href="#features">Features</a>
+        <a href="#about">About</a>
+    </div>
 
-    <p>AI-powered examination and monitoring system.</p>
+    <a href="/login" class="nav-btn">Get Started →</a>
+</nav>
 
-    <button onclick="location.href='/login'">
-        Get Started
-    </button>
+<section class="hero">
+
+    <div class="badge">✦ AI POWERED EXAMINATION PLATFORM</div>
+
+    <h1>
+        The Future of<br>
+        <span>Online Examination</span>
+    </h1>
+
+    <p>
+        Experience smarter online examinations with PDF question
+        extraction, intelligent monitoring and automated results.
+    </p>
+
+    <div class="hero-buttons">
+        <a href="/login" class="primary-btn">Get Started →</a>
+        <a href="#features" class="secondary-btn">Explore Features</a>
+    </div>
+
+    <div class="features" id="features">
+
+        <div class="card">
+            <div class="card-icon">📄</div>
+            <h3>PDF Questions</h3>
+            <p>Teachers can upload PDF question papers.</p>
+        </div>
+
+        <div class="card">
+            <div class="card-icon">🤖</div>
+            <h3>AI Proctoring</h3>
+            <p>Exam activity monitoring with computer vision.</p>
+        </div>
+
+        <div class="card">
+            <div class="card-icon">📊</div>
+            <h3>Smart Results</h3>
+            <p>Automatic evaluation and performance reports.</p>
+        </div>
+
+    </div>
+
+</section>
+
+<section class="about" id="about">
+    <h2>Examinations made smarter.</h2>
+    <p>
+        ExamGuard AI brings examination management,
+        digital question papers and responsible AI monitoring
+        together in one platform.
+    </p>
+</section>
+
+<footer>
+    © 2026 ExamGuard AI. All rights reserved.
+</footer>
 
 </body>
 </html>
