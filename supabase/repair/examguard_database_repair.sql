@@ -1,8 +1,30 @@
 -- ExamGuard AI additive repair for a partially applied schema.
--- Review supabase/repair/verify_examguard_database.sql first.
--- No tables or user rows are dropped. The existing profiles table and its data
--- are preserved; required columns/types are checked before any repair DDL.
--- This script normalizes RLS policies on the ExamGuard application tables.
+-- Existing public.profiles contains user data and is never dropped or recreated.
+-- The current project report includes requested_role and teacher_approved and
+-- does not include updated_at. Those fields are guarded by the profile trigger.
+-- Missing profiles for Auth users are inserted; existing profile rows stay unchanged.
+-- The existing "Users can view own profile" policy is retained.
+
+-- READ-ONLY PREFLIGHT: run this section by itself before running the repair.
+select column_name, data_type, udt_name, is_nullable, column_default
+from information_schema.columns
+where table_schema='public' and table_name='profiles'
+order by ordinal_position;
+
+select c.conname, c.contype, pg_get_constraintdef(c.oid) as definition
+from pg_constraint c
+where c.conrelid='public.profiles'::regclass
+order by c.contype,c.conname;
+
+select count(*) as existing_profiles from public.profiles;
+
+select schemaname,tablename,policyname,permissive,roles,cmd,qual,with_check
+from pg_policies
+where schemaname='public' and tablename in (
+  'profiles','teacher_requests','exams','questions','exam_attempts',
+  'student_answers','results','notifications','platform_settings'
+)
+order by tablename,policyname;
 
 begin;
 
@@ -21,7 +43,7 @@ begin
     into missing_columns
   from (values
     ('id','uuid'), ('full_name','text'), ('role','text'),
-    ('teacher_status','text'), ('created_at','timestamptz'), ('updated_at','timestamptz')
+    ('teacher_approved','bool'), ('teacher_status','text'), ('created_at','timestamptz')
   ) as required(column_name, udt_name)
   where not exists (
     select 1 from information_schema.columns c
@@ -31,6 +53,36 @@ begin
 
   if missing_columns is not null then
     raise exception 'Existing public.profiles is incompatible. Missing/mismatched required columns: %. No repair changes were made.', missing_columns;
+  end if;
+
+  if not exists (
+    select 1 from information_schema.columns c
+    where c.table_schema='public' and c.table_name='profiles'
+      and c.column_name='requested_role' and c.data_type in ('text','character varying')
+  ) then
+    raise exception 'public.profiles.requested_role must be a text column for signup role synchronization. No repair changes were made.';
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint c
+    where c.conrelid='public.profiles'::regclass
+      and c.conname='profiles_requested_role_check' and c.contype='c'
+      and pg_get_constraintdef(c.oid) ilike '%student%'
+      and pg_get_constraintdef(c.oid) ilike '%teacher%'
+      and pg_get_constraintdef(c.oid) not ilike '%admin%'
+  ) then
+    raise exception 'The expected student/teacher-only profiles_requested_role_check is missing or differs. No repair changes were made.';
+  end if;
+
+  select string_agg(c.column_name, ', ' order by c.column_name) into missing_columns
+  from information_schema.columns c
+  where c.table_schema='public' and c.table_name='profiles'
+    and c.is_nullable='NO' and c.column_default is null
+    and c.is_generated='NEVER'
+    and c.is_identity='NO'
+    and c.column_name not in ('id','full_name','role','requested_role','teacher_approved','teacher_status');
+  if missing_columns is not null then
+    raise exception 'public.profiles has additional required columns with no defaults (%); automatic profile creation would fail. No repair changes were made.', missing_columns;
   end if;
 
   select a.attnum into profile_id_att
@@ -50,7 +102,7 @@ begin
       'profiles','teacher_requests','exams','questions','exam_attempts',
       'student_answers','results','notifications','platform_settings'
     ) and policyname <> all(array[
-      'profile_read','profile_update','profile_teacher_result_read',
+      'profile_read','profile_update','profile_teacher_result_read','Users can view own profile',
       'request_read','request_admin_update','exam_read','exam_insert','exam_update','exam_delete',
       'question_teacher_all','attempts_read','results_read','answers_read',
       'notification_self','settings_read','settings_admin_write'
@@ -175,6 +227,36 @@ begin
 end;
 $$;
 
+-- Ensure each app table has the key the client and PostgREST expect. A table
+-- with a different existing primary key is not rewritten; it stops for review.
+do $$
+declare
+  pk record;
+  att smallint;
+  existing_key smallint[];
+begin
+  for pk in select * from (values
+    ('profiles','id'),('teacher_requests','id'),('exams','id'),('questions','id'),
+    ('exam_attempts','id'),('student_answers','id'),('results','id'),
+    ('notifications','id'),('platform_settings','key')
+  ) as v(table_name,column_name)
+  loop
+    select a.attnum into att from pg_attribute a
+      where a.attrelid=format('public.%I',pk.table_name)::regclass
+        and a.attname=pk.column_name and not a.attisdropped;
+    select c.conkey into existing_key from pg_constraint c
+      where c.conrelid=format('public.%I',pk.table_name)::regclass and c.contype='p';
+    if existing_key is null then
+      execute format('alter table public.%I add constraint %I primary key (%I)',
+        pk.table_name,pk.table_name || '_repair_pkey',pk.column_name);
+    elsif existing_key <> array[att]::smallint[] then
+      raise exception 'public.% has a different primary key; inspect it before repair',pk.table_name;
+    end if;
+    existing_key := null;
+  end loop;
+end;
+$$;
+
 -- Add missing FKs as NOT VALID: existing rows remain untouched, while new writes
 -- are checked. Existing matching FKs are preserved.
 do $$
@@ -222,13 +304,21 @@ begin
 end;
 $$;
 
--- Constrain role values without scanning or rewriting historical rows.
+-- Replace the legacy role check that excludes admin. requested_role's existing
+-- student/teacher-only check is deliberately preserved unchanged.
 do $$
 begin
-  if not exists (select 1 from pg_constraint where conrelid='public.profiles'::regclass and conname='profiles_role_repair_check') then
-    alter table public.profiles add constraint profiles_role_repair_check
-      check (role in ('student','teacher','admin')) not valid;
+  if exists (
+    select 1 from pg_constraint where conrelid='public.profiles'::regclass
+      and contype='c' and conname not in ('profiles_role_check','profiles_role_repair_check','profiles_teacher_status_repair_check')
+      and pg_get_constraintdef(oid) ~* '\mrole\M'
+  ) then
+    raise exception 'An additional profile role check exists. Review the preflight constraint output before changing the role constraint.';
   end if;
+  alter table public.profiles drop constraint if exists profiles_role_check;
+  alter table public.profiles drop constraint if exists profiles_role_repair_check;
+  alter table public.profiles add constraint profiles_role_check
+    check (role in ('student','teacher','admin'));
   if not exists (select 1 from pg_constraint where conrelid='public.profiles'::regclass and conname='profiles_teacher_status_repair_check') then
     alter table public.profiles add constraint profiles_teacher_status_repair_check
       check (teacher_status in ('none','pending','approved','rejected')) not valid;
@@ -279,8 +369,8 @@ declare
   );
 begin
   if account_type not in ('student','teacher') then account_type := 'student'; end if;
-  insert into public.profiles(id,full_name,role,teacher_status)
-    values(new.id,display_name,account_type,case when account_type='teacher' then 'pending' else 'none' end)
+  insert into public.profiles(id,full_name,role,requested_role,teacher_approved,teacher_status)
+    values(new.id,display_name,account_type,account_type,false,case when account_type='teacher' then 'pending' else 'none' end)
     on conflict (id) do nothing;
   if account_type='teacher' then
     insert into public.teacher_requests(user_id) values(new.id) on conflict (user_id) do nothing;
@@ -294,9 +384,14 @@ language plpgsql set search_path = '' as $$
 begin
   if auth.uid() is not null and not public.is_admin() then
     new.role := old.role;
+    new.requested_role := old.requested_role;
+    new.teacher_approved := old.teacher_approved;
     new.teacher_status := old.teacher_status;
+  elsif new.role is distinct from old.role or new.teacher_status is distinct from old.teacher_status then
+    new.teacher_approved := (new.role='teacher' and new.teacher_status='approved');
+  else
+    new.teacher_approved := old.teacher_approved;
   end if;
-  new.updated_at := now();
   return new;
 end;
 $$;
@@ -348,7 +443,7 @@ begin
   if not found then raise exception 'Attempt unavailable'; end if;
   select * into e from public.exams where id=a.exam_id;
   if now()>a.started_at+make_interval(mins=>e.duration_minutes) then raise exception 'Time limit expired'; end if;
-  if jsonb_typeof(p_answers)<>'array' then raise exception 'Invalid answers'; end if;
+  if jsonb_typeof(p_answers) is distinct from 'array' then raise exception 'Invalid answers'; end if;
   if exists(
     select 1 from jsonb_array_elements(p_answers) x
     left join public.questions q on q.id=(x->>'question_id')::uuid and q.exam_id=a.exam_id
@@ -406,7 +501,10 @@ begin
         reviewed_by=auth.uid(),reviewed_at=now()
     where id=p_request and status='pending' returning user_id into uid;
   if uid is null then raise exception 'Pending request not found'; end if;
-  update public.profiles set teacher_status=case when p_approve then 'approved' else 'rejected' end where id=uid;
+  update public.profiles
+    set teacher_status=case when p_approve then 'approved' else 'rejected' end,
+        teacher_approved=p_approve
+    where id=uid;
   insert into public.notifications(user_id,title,body)
     values(uid,'Teacher request reviewed',case when p_approve then 'Your teacher access has been approved.' else 'Your teacher access request was declined.' end);
 end;
@@ -415,6 +513,8 @@ $$;
 revoke all on function public.current_role() from public;
 revoke all on function public.is_admin() from public;
 revoke all on function public.is_approved_teacher() from public;
+revoke all on function public.handle_new_user() from public;
+revoke all on function public.protect_profile_role() from public;
 revoke all on function public.start_exam(uuid) from public;
 revoke all on function public.save_exam_answers(uuid,jsonb) from public;
 revoke all on function public.submit_exam(uuid,jsonb) from public;
@@ -427,12 +527,42 @@ grant execute on function public.save_exam_answers(uuid,jsonb) to authenticated;
 grant execute on function public.submit_exam(uuid,jsonb) to authenticated;
 grant execute on function public.review_teacher(uuid,boolean) to authenticated;
 
+revoke all on function public.current_role() from anon;
+revoke all on function public.is_admin() from anon;
+revoke all on function public.is_approved_teacher() from anon;
+revoke all on function public.handle_new_user() from anon;
+revoke all on function public.protect_profile_role() from anon;
+revoke all on function public.start_exam(uuid) from anon;
+revoke all on function public.save_exam_answers(uuid,jsonb) from anon;
+revoke all on function public.submit_exam(uuid,jsonb) from anon;
+revoke all on function public.review_teacher(uuid,boolean) from anon;
+
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
 drop trigger if exists profile_role_guard on public.profiles;
 create trigger profile_role_guard before update on public.profiles
   for each row execute function public.protect_profile_role();
+
+-- Backfill only users whose profile is absent. Existing profile rows, roles,
+-- approval states, and any extra profile columns are left untouched.
+insert into public.profiles(id,full_name,role,requested_role,teacher_approved,teacher_status)
+select u.id,
+  coalesce(nullif(btrim(u.raw_user_meta_data->>'full_name'),''),
+           nullif(btrim(u.raw_user_meta_data->>'name'),''),
+           nullif(split_part(coalesce(u.email,''),'@',1),''),''),
+  case when u.raw_user_meta_data->>'account_type'='teacher' then 'teacher' else 'student' end,
+  case when u.raw_user_meta_data->>'account_type'='teacher' then 'teacher' else 'student' end,
+  false,
+  case when u.raw_user_meta_data->>'account_type'='teacher' then 'pending' else 'none' end
+from auth.users u
+where not exists(select 1 from public.profiles p where p.id=u.id)
+on conflict (id) do nothing;
+
+insert into public.teacher_requests(user_id)
+select p.id from public.profiles p
+where p.role='teacher' and p.teacher_status='pending'
+on conflict (user_id) do nothing;
 
 alter table public.profiles enable row level security;
 alter table public.teacher_requests enable row level security;
@@ -454,6 +584,7 @@ begin
       'profiles','teacher_requests','exams','questions','exam_attempts',
       'student_answers','results','notifications','platform_settings'
     )
+    and not (tablename='profiles' and policyname='Users can view own profile')
   loop
     execute format('drop policy %I on public.%I',p.policyname,p.tablename);
   end loop;
@@ -511,6 +642,51 @@ grant select,insert,update,delete on public.questions to authenticated;
 grant select on public.exam_attempts,public.student_answers,public.results to authenticated;
 grant select,insert,update,delete on public.notifications to authenticated;
 grant select,insert,update,delete on public.platform_settings to authenticated;
+grant usage on schema public to authenticated;
+revoke all on public.profiles,public.teacher_requests,public.exams,public.questions,
+  public.exam_attempts,public.student_answers,public.results,public.notifications,
+  public.platform_settings from anon;
+revoke insert,delete on public.profiles from authenticated;
+revoke insert,delete on public.teacher_requests from authenticated;
+revoke insert,update,delete on public.exam_attempts,public.student_answers,public.results from authenticated;
+
+do $$
+declare missing_tables text;
+begin
+  select string_agg(t.table_name,', ' order by t.table_name) into missing_tables
+  from (values
+    ('profiles'),('teacher_requests'),('exams'),('questions'),('exam_attempts'),
+    ('student_answers'),('results'),('notifications'),('platform_settings')
+  ) as t(table_name)
+  where to_regclass('public.' || t.table_name) is null;
+  if missing_tables is not null then raise exception 'Repair incomplete; missing tables: %',missing_tables; end if;
+  if not exists(select 1 from pg_constraint c
+    where c.conrelid='public.profiles'::regclass and c.conname='profiles_role_check'
+      and c.contype='c' and pg_get_constraintdef(c.oid) ilike '%admin%') then
+    raise exception 'Repair incomplete; profiles_role_check does not allow admin';
+  end if;
+  if not exists(select 1 from pg_constraint c
+    where c.conrelid='public.profiles'::regclass and c.conname='profiles_requested_role_check'
+      and c.contype='c' and pg_get_constraintdef(c.oid) ilike '%student%'
+      and pg_get_constraintdef(c.oid) ilike '%teacher%'
+      and pg_get_constraintdef(c.oid) not ilike '%admin%') then
+    raise exception 'Repair incomplete; profiles_requested_role_check was not preserved';
+  end if;
+  if not exists(select 1 from pg_trigger where tgrelid='auth.users'::regclass and tgname='on_auth_user_created' and not tgisinternal) then
+    raise exception 'Repair incomplete; auth profile trigger is missing';
+  end if;
+  if not exists(select 1 from pg_trigger where tgrelid='public.profiles'::regclass and tgname='profile_role_guard' and not tgisinternal) then
+    raise exception 'Repair incomplete; profile role guard is missing';
+  end if;
+  if exists(select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname='public' and c.relname in (
+      'profiles','teacher_requests','exams','questions','exam_attempts',
+      'student_answers','results','notifications','platform_settings'
+    ) and not c.relrowsecurity) then
+    raise exception 'Repair incomplete; RLS is disabled on an ExamGuard table';
+  end if;
+end;
+$$;
 
 notify pgrst, 'reload schema';
 commit;
