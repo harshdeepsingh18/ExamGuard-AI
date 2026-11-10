@@ -69,7 +69,7 @@ export function Teacher() {
     }
     setTitle('')
     setDescription('')
-    setExamId(data.id)
+    setExamId(examType === 'online' ? data.id : (exams.find(exam => exam.exam_type === 'online')?.id || ''))
     setNotice(examType === 'pdf' ? 'PDF exam draft created. Upload the question paper below.' : 'Exam draft created. Add questions, then publish it.')
     await load()
   }

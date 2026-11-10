@@ -104,6 +104,7 @@ $$;
 drop policy if exists exam_pdf_storage_read on storage.objects;
 drop policy if exists exam_pdf_storage_insert on storage.objects;
 drop policy if exists exam_pdf_storage_delete on storage.objects;
+grant select,insert,delete on storage.objects to authenticated;
 create policy exam_pdf_storage_read on storage.objects
   for select to authenticated using (
     bucket_id='exam-question-papers' and name ~ '^[0-9a-fA-F-]{36}/[^/]+[.]pdf$'

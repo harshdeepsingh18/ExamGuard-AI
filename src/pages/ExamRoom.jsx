@@ -55,9 +55,9 @@ export function ExamRoom() {
     return () => { active = false }
   }, [id])
 
-  const submit = useCallback(async () => {
+  const submit = useCallback(async (confirmPdf = true) => {
     if (busy || expired || submitted || !exam || !configured) return
-    if (paper?.exam_type === 'pdf' && !confirm('Finish and submit this PDF exam?')) return
+    if (paper?.exam_type === 'pdf' && confirmPdf && !confirm('Finish and submit this PDF exam?')) return
     setBusy(true)
     const p_answers = Object.entries(answers).map(([question_id, selected_answer]) => ({ question_id, selected_answer }))
     const { data, error: submitError } = await supabase.rpc('submit_exam', { p_attempt: exam.attempt_id, p_answers })
@@ -86,7 +86,7 @@ export function ExamRoom() {
   }, [timerActive])
 
   useEffect(() => {
-    if (seconds === 0 && !busy && !result && !expired && !submitted) submit()
+    if (seconds === 0 && !busy && !result && !expired && !submitted) submit(false)
   }, [seconds, busy, result, expired, submitted, submit])
 
   const refreshPaperUrl = useCallback(async () => {
