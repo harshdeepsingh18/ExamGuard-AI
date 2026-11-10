@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, ShieldCheck, Mail, ArrowLeft } from 'lucide-react'
 import { configured, supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -13,7 +13,7 @@ export function AuthPage({ signup = false }) {
  const [role, setRole] = useState('student'), [terms, setTerms] = useState(false), [show, setShow] = useState(false), [busy, setBusy] = useState(false)
  const [error, setError] = useState(''), [message, setMessage] = useState('')
  const nav = useNavigate(), { user, profile, error: authError } = useAuth()
- if (user && profile && mode !== 'newpassword') return <div className="center-screen">Opening your workspace…</div>
+ if (user && profile && mode !== 'newpassword') return <Navigate to="/" replace />
  const run = async fn => { if (busy) return; setError(''); setMessage(''); setBusy(true); try { await fn() } catch (e) { setError(e.message || 'Something went wrong. Please try again.') } finally { setBusy(false) } }
  const submit = e => {
   e.preventDefault()

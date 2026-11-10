@@ -8,6 +8,10 @@ declare
  google_id uuid := gen_random_uuid();
  profile_row public.profiles%rowtype;
 begin
+ if exists(select 1 from auth.users) then
+  raise exception 'This smoke test is intended for an empty Auth user table';
+ end if;
+
  insert into auth.users(id, aud, role, email, encrypted_password, raw_app_meta_data, raw_user_meta_data, created_at, updated_at)
  values(student_id, 'authenticated', 'authenticated', student_id::text || '@fresh-auth.test', '',
   '{"provider":"email","providers":["email"]}'::jsonb,

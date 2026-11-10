@@ -85,6 +85,8 @@ Build with `npm run build`; deploy `dist/` to any static host. Configure `VITE_S
 
 Run `npm run build` and `npm run lint` for the client checks. To check first-user profile creation against a completely empty Auth user table, run `supabase/tests/fresh_auth_profiles.sql` in the Supabase SQL Editor after applying all migrations; the script inserts temporary email and Google-shaped auth rows, checks their profiles, and rolls back. Complete browser OAuth still requires the Google provider credentials and allowed redirect URLs configured above.
 
+If the app reports that a table is missing from the schema cache, check `select to_regclass('public.results');` in that same project's SQL Editor. If it returns `public.results`, run `notify pgrst, 'reload schema';` and retry after a short wait. If it returns null, apply the schema migrations; refreshing the cache cannot create a missing table.
+
 
 
 

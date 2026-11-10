@@ -63,9 +63,9 @@ language plpgsql security definer set search_path = '' as $$
 declare
  account_type text := coalesce(new.raw_user_meta_data->>'account_type', 'student');
  display_name text := coalesce(
-  new.raw_user_meta_data->>'full_name',
-  new.raw_user_meta_data->>'name',
-  split_part(coalesce(new.email, ''), '@', 1),
+  nullif(btrim(new.raw_user_meta_data->>'full_name'), ''),
+  nullif(btrim(new.raw_user_meta_data->>'name'), ''),
+  nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
   ''
  );
 begin
@@ -143,6 +143,8 @@ declare uid uuid; begin if not public.is_admin() then raise exception 'Admin acc
  insert into public.notifications(user_id,title,body) values(uid,'Teacher request reviewed',case when p_approve then 'Your teacher access has been approved.' else 'Your teacher access request was declined.' end);
 end $$;
 revoke all on function public.review_teacher(uuid,boolean) from public; grant execute on function public.review_teacher(uuid,boolean) to authenticated;
+
+notify pgrst, 'reload schema';
 
 
 

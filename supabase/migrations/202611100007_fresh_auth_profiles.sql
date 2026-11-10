@@ -5,9 +5,9 @@ language plpgsql security definer set search_path = '' as $$
 declare
  account_type text := coalesce(new.raw_user_meta_data->>'account_type', 'student');
  display_name text := coalesce(
-  new.raw_user_meta_data->>'full_name',
-  new.raw_user_meta_data->>'name',
-  split_part(coalesce(new.email, ''), '@', 1),
+  nullif(btrim(new.raw_user_meta_data->>'full_name'), ''),
+  nullif(btrim(new.raw_user_meta_data->>'name'), ''),
+  nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
   ''
  );
 begin
@@ -30,3 +30,5 @@ create trigger on_auth_user_created
 -- Remove the former client-callable repair path. Profile rows are created only
 -- inside the auth.users transaction by handle_new_user().
 drop function if exists public.ensure_own_profile();
+
+notify pgrst, 'reload schema';
