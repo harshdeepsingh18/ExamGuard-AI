@@ -71,6 +71,7 @@ create table if not exists public.exams (
     description text not null default '',
     exam_date date not null,
     start_time time not null,
+    timezone text not null default 'Asia/Kolkata',
     duration_minutes integer not null check (duration_minutes between 1 and 600),
     total_marks numeric(8,2) not null check (total_marks > 0),
     passing_marks numeric(8,2) not null default 0 check (passing_marks >= 0),
@@ -84,6 +85,27 @@ create table if not exists public.exams (
 );
 create index if not exists exams_published_date_idx on public.exams(published, exam_date, start_time);
 create index if not exists exams_teacher_idx on public.exams(teacher_id, created_at desc);
+alter table public.exams add column if not exists timezone text not null default 'Asia/Kolkata';
+
+create or replace function public.start_exam_attempt(target_exam uuid)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare
+    exam_row public.exams%rowtype;
+    new_attempt uuid;
+    scheduled_start timestamptz;
+begin
+    if not public.is_student_account(auth.uid()) then raise exception 'Student access is required'; end if;
+    select * into exam_row from public.exams where id = target_exam and published;
+    if not found then raise exception 'Exam is not available'; end if;
+    scheduled_start := ((exam_row.exam_date + exam_row.start_time) at time zone exam_row.timezone);
+    if now() < scheduled_start or now() > scheduled_start + make_interval(mins => exam_row.duration_minutes) then
+        raise exception 'Exam is outside its scheduled start window';
+    end if;
+    insert into public.exam_attempts(exam_id, student_id)
+    values (target_exam, auth.uid()) returning id into new_attempt;
+    return new_attempt;
+end;
+$$;
 
 create or replace function public.guard_exam_changes()
 returns trigger language plpgsql security definer set search_path = '' as $$
