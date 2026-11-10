@@ -1,7 +1,0 @@
-{% extends "base.html" %}
-{% block title %}My Results | ExamGuard AI{% endblock %}
-{% block content %}
-<main class="dashboard-page"><div class="badge">STUDENT PORTAL</div><h1>My <span class="accent">results</span></h1>
-    {% if results %}<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">{% for result in results %}{% set exam = result.exams %}<article class="card"><span class="status status-published">Published</span><h2>{{ exam.title if exam else 'Exam result' }}</h2><p>{{ exam.subject if exam else '' }}</p><div class="stat-card"><span>Score</span><strong>{{ result.marks_obtained }} / {{ result.total_marks }}</strong></div><p>{{ ((result.marks_obtained / result.total_marks * 100)|round(1)) if result.total_marks else 0 }}% · {{ 'Pass' if result.marks_obtained >= exam.passing_marks else 'Review required' if exam else 'Graded' }}</p><p class="muted">{{ result.graded_at[:10] }}</p></article>{% endfor %}</div>{% else %}<div class="panel muted">No results have been published yet.</div>{% endif %}
-</main>
-{% endblock %}

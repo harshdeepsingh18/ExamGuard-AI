@@ -1,0 +1,1 @@
+export default { content: ['./index.html', './src/**/*.{js,jsx}'], theme: { extend: { fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] }, colors: { ink: '#17211b', muted: '#718078', green: { 50: '#eff8f1', 100: '#d9efdf', 500: '#43a36a', 600: '#328653', 700: '#236942' } }, boxShadow: { card: '0 10px 35px rgba(26,54,37,.06)' } } }, plugins: [] }

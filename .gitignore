@@ -1,9 +1,6 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-flask_session/
-instance/
-uploads/
-*.log
+node_modules
+dist
 .env
+.env.*
+!.env.example
+.DS_Store
