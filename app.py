@@ -4,6 +4,7 @@ import binascii
 import os
 import uuid
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from flask import (
     Flask, jsonify, render_template, request,
@@ -94,10 +95,6 @@ def require_profile(*roles):
     if roles and profile.get("role") not in roles:
         return None, redirect(url_for("dashboard"))
     return profile, None
-
-
-def format_exam_time(exam):
-    return f"{exam.get('exam_date', '')} {str(exam.get('start_time', ''))[:5]}"
 
 
 # Homepage
@@ -402,12 +399,17 @@ def teacher_exams():
                 try:
                     import fitz
                     document = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    if document.page_count > 100:
+                        document.close()
+                        raise ValueError("PDF question papers may not exceed 100 pages.")
                     extracted_text = "\n\n".join(page.get_text() for page in document).strip()
                     document.close()
                 except Exception as pdf_error:
                     raise ValueError("This PDF could not be read. Please try another PDF.") from pdf_error
                 if not extracted_text:
                     raise ValueError("This PDF appears to be scanned and contains no selectable text. OCR is not configured yet; upload a text-based PDF.")
+                if len(extracted_text) > 500_000:
+                    raise ValueError("The extracted PDF text is too large. Use a shorter question paper.")
                 paper_path = f"{profile['id']}/{exam_id}.pdf"
                 client.storage.from_("question-papers").upload(
                     paper_path, pdf_bytes,
@@ -453,6 +455,10 @@ def edit_exam(exam_id):
         exam = client.table("exams").select("*").eq("id", exam_id).single().execute().data
         questions = client.table("questions").select("*").eq("exam_id", exam_id).order("position").execute().data or []
         if request.method == "POST":
+            if exam.get("published") and request.form.get("action") == "unpublish":
+                client.table("exams").update({"published": False}).eq("id", exam_id).execute()
+                flash("Exam unpublished.", "success")
+                return redirect(url_for("edit_exam", exam_id=exam_id))
             if exam.get("published"):
                 flash("Published exams cannot be changed.", "error")
                 return redirect(url_for("edit_exam", exam_id=exam_id))
@@ -464,6 +470,30 @@ def edit_exam(exam_id):
                 else:
                     client.table("exams").update({"published": True}).eq("id", exam_id).execute()
                     flash("Exam published and available to students.", "success")
+            elif request.form.get("action") == "save_details":
+                title = request.form.get("title", "").strip()
+                subject = request.form.get("subject", "").strip()
+                exam_date = request.form.get("exam_date", "")
+                start_time = request.form.get("start_time", "")
+                duration = int(request.form.get("duration_minutes", "0"))
+                total_marks = float(request.form.get("total_marks", "0"))
+                passing_marks = float(request.form.get("passing_marks", "0"))
+                date.fromisoformat(exam_date)
+                datetime.strptime(start_time, "%H:%M")
+                if not title or not subject or not 1 <= duration <= 600 or total_marks <= 0 or not 0 <= passing_marks <= total_marks:
+                    raise ValueError("Check the exam details and mark values.")
+                client.table("exams").update({
+                    "title": title, "subject": subject, "exam_date": exam_date,
+                    "start_time": start_time, "duration_minutes": duration,
+                    "total_marks": total_marks, "passing_marks": passing_marks,
+                    "description": request.form.get("description", "").strip(),
+                    "rules": request.form.get("rules", "").strip()
+                }).eq("id", exam_id).execute()
+                flash("Draft details updated.", "success")
+            elif request.form.get("action") == "delete_question":
+                question_id = request.form.get("question_id", "")
+                client.table("questions").delete().eq("id", question_id).eq("exam_id", exam_id).execute()
+                flash("Question removed from the draft.", "success")
             else:
                 prompt = request.form.get("prompt", "").strip()
                 kind = request.form.get("question_type", "multiple_choice")
@@ -529,7 +559,7 @@ def available_exams():
     return render_template("available_exams.html", profile=profile, exams=exams, attempt_status=attempt_status)
 
 
-@app.route("/exam/<exam_id>", methods=["GET", "POST"])
+@app.route("/exam/<exam_id>")
 def take_exam(exam_id):
     profile, response = require_profile("student")
     if response:
@@ -538,11 +568,26 @@ def take_exam(exam_id):
     try:
         exam = client.table("exams").select("*").eq("id", exam_id).eq("published", True).single().execute().data
         existing = client.table("exam_attempts").select("*").eq("exam_id", exam_id).eq("student_id", profile["id"]).execute().data or []
+        exam_timezone = ZoneInfo(os.getenv("EXAM_TIMEZONE", "UTC"))
+        start_at = datetime.combine(date.fromisoformat(exam["exam_date"]), datetime.strptime(str(exam["start_time"])[:5], "%H:%M").time(), tzinfo=exam_timezone)
+        now = datetime.now(exam_timezone)
+        if now < start_at:
+            flash("This exam is not open yet.", "error")
+            return redirect(url_for("available_exams"))
         if existing and existing[0]["status"] != "in_progress":
             flash("This exam has already been submitted.", "error")
             return redirect(url_for("student_results"))
+        if existing:
+            attempt_start = datetime.fromisoformat(existing[0]["started_at"].replace("Z", "+00:00")).astimezone(exam_timezone)
+            if now >= attempt_start + timedelta(minutes=int(exam["duration_minutes"])):
+                client.table("exam_attempts").update({"status": "submitted"}).eq("id", existing[0]["id"]).execute()
+                flash("The exam time has expired and your attempt was submitted.", "error")
+                return redirect(url_for("student_results"))
+        elif now > start_at + timedelta(minutes=int(exam["duration_minutes"])):
+            flash("The scheduled exam time has ended.", "error")
+            return redirect(url_for("available_exams"))
         if not existing:
-            attempt = client.table("exam_attempts").insert({"exam_id": exam_id, "student_id": profile["id"]}).execute().data[0]
+            attempt = client.table("exam_attempts").insert({"exam_id": exam_id, "student_id": profile["id"]}).select("*").single().execute().data
         else:
             attempt = existing[0]
         questions = client.table("questions").select("id,position,question_type,prompt,options,marks").eq("exam_id", exam_id).order("position").execute().data or []

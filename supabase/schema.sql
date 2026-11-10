@@ -81,7 +81,13 @@ begin
         if new.published then raise exception 'Exams must be reviewed before publishing'; end if;
         return new;
     end if;
-    if old.published then raise exception 'Published exams cannot be changed'; end if;
+    if old.published then
+        if not new.published and not exists(select 1 from public.exam_attempts a where a.exam_id = old.id) then
+            new.updated_at = now();
+            return new;
+        end if;
+        raise exception 'Published exams cannot be changed after students have started';
+    end if;
     if new.teacher_id is distinct from old.teacher_id then raise exception 'Exam owner cannot be changed'; end if;
     if new.published then
         select coalesce(sum(marks), 0), count(*) into question_total, question_count from public.questions where exam_id = old.id;
@@ -122,13 +128,13 @@ create table if not exists public.question_keys (
 alter table public.question_keys enable row level security;
 drop policy if exists question_key_teacher_read on public.question_keys;
 create policy question_key_teacher_read on public.question_keys for select to authenticated using (
-    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id where q.id = question_id and e.teacher_id = auth.uid())
+    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id join public.profiles p on p.id = e.teacher_id where q.id = question_id and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
 );
 drop policy if exists question_key_teacher_write on public.question_keys;
 create policy question_key_teacher_write on public.question_keys for all to authenticated using (
-    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id where q.id = question_id and e.teacher_id = auth.uid() and not e.published)
+    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id join public.profiles p on p.id = e.teacher_id where q.id = question_id and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved and not e.published)
 ) with check (
-    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id where q.id = question_id and e.teacher_id = auth.uid() and not e.published)
+    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id join public.profiles p on p.id = e.teacher_id where q.id = question_id and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved and not e.published)
 );
 
 create table if not exists public.exam_attempts (
@@ -265,7 +271,8 @@ declare
     state text;
 begin
     select status into state from public.exam_attempts where id = new.attempt_id;
-    if state <> 'in_progress' and current_setting('examguard.grading', true) is distinct from 'true' then
+    if (state <> 'in_progress' or not public.is_attempt_open(new.attempt_id)) and
+       current_setting('examguard.grading', true) is distinct from 'true' then
         raise exception 'Submitted answers cannot be changed';
     end if;
     if new.marks_awarded is distinct from old.marks_awarded and
@@ -292,7 +299,7 @@ create index if not exists notifications_user_idx on public.notifications(user_i
 
 create or replace function public.owns_exam(target_exam uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
-    select exists(select 1 from public.exams e where e.id = target_exam and e.teacher_id = auth.uid())
+    select exists(select 1 from public.exams e join public.profiles p on p.id = e.teacher_id where e.id = target_exam and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
 $$;
 create or replace function public.owns_attempt(target_attempt uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
@@ -301,8 +308,16 @@ $$;
 create or replace function public.teaches_attempt(target_attempt uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
     select exists(
+        select 1 from public.exam_attempts a join public.exams e on e.id = a.exam_id join public.profiles p on p.id = e.teacher_id
+        where a.id = target_attempt and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved
+    )
+$$;
+create or replace function public.is_attempt_open(target_attempt uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+    select exists(
         select 1 from public.exam_attempts a join public.exams e on e.id = a.exam_id
-        where a.id = target_attempt and e.teacher_id = auth.uid()
+         where a.id = target_attempt and a.status = 'in_progress'
+           and a.started_at + make_interval(mins => e.duration_minutes) > now()
     )
 $$;
 
@@ -331,9 +346,15 @@ create policy exam_teacher_insert on public.exams for insert to authenticated wi
     teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
 );
 drop policy if exists exam_teacher_update on public.exams;
-create policy exam_teacher_update on public.exams for update to authenticated using (teacher_id = auth.uid()) with check (teacher_id = auth.uid());
+create policy exam_teacher_update on public.exams for update to authenticated using (
+    teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+) with check (
+    teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+);
 drop policy if exists exam_teacher_delete on public.exams;
-create policy exam_teacher_delete on public.exams for delete to authenticated using (teacher_id = auth.uid());
+create policy exam_teacher_delete on public.exams for delete to authenticated using (
+    teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+);
 
 drop policy if exists question_read_available on public.questions;
 create policy question_read_available on public.questions for select to authenticated using (
@@ -356,13 +377,13 @@ create policy attempts_student_update on public.exam_attempts for update to auth
 drop policy if exists answers_read_owner_or_teacher on public.student_answers;
 create policy answers_read_owner_or_teacher on public.student_answers for select to authenticated using (public.owns_attempt(attempt_id) or public.teaches_attempt(attempt_id));
 drop policy if exists answers_student_write on public.student_answers;
-create policy answers_student_write on public.student_answers for all to authenticated using (public.owns_attempt(attempt_id)) with check (public.owns_attempt(attempt_id));
+create policy answers_student_write on public.student_answers for all to authenticated using (public.owns_attempt(attempt_id) and public.is_attempt_open(attempt_id)) with check (public.owns_attempt(attempt_id) and public.is_attempt_open(attempt_id));
 drop policy if exists answers_teacher_grade on public.student_answers;
 
 drop policy if exists events_read_owner_or_teacher on public.proctoring_events;
 create policy events_read_owner_or_teacher on public.proctoring_events for select to authenticated using (public.owns_attempt(attempt_id) or public.teaches_attempt(attempt_id));
 drop policy if exists events_student_insert on public.proctoring_events;
-create policy events_student_insert on public.proctoring_events for insert to authenticated with check (public.owns_attempt(attempt_id));
+create policy events_student_insert on public.proctoring_events for insert to authenticated with check (public.owns_attempt(attempt_id) and public.is_attempt_open(attempt_id));
 
 drop policy if exists results_read_owner_or_teacher on public.exam_results;
 create policy results_read_owner_or_teacher on public.exam_results for select to authenticated using (
