@@ -253,7 +253,7 @@ def reset_password():
             refresh_token = request.form.get("refresh_token") or session.get("reset_refresh_token")
             if access_token and refresh_token:
                 client = get_supabase()
-            client.auth.set_session(access_token, refresh_token)
+                client.auth.set_session(access_token, refresh_token)
                 client.auth.update_user({"password": password})
             elif session.get("access_token") and session.get("refresh_token"):
                 client = get_user_client()
