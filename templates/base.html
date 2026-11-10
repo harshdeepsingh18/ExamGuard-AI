@@ -24,6 +24,7 @@
         <a href="{{ url_for('home') }}#features">Features</a>
         <a href="{{ url_for('home') }}#how-it-works">How It Works</a>
         <a href="{{ url_for('home') }}#about">About</a>
+        {% if profile %}<a href="{{ url_for('account_profile') }}">Profile</a>{% endif %}
     </div>
     <div class="nav-actions">
         {% if profile %}
