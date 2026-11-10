@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AppLayout } from './layouts/AppLayout'
 import { AuthPage } from './pages/AuthPage'
+import { AuthCallback } from './pages/AuthCallback'
 import { Dashboard } from './pages/Dashboard'
 import { Exams } from './pages/Exams'
 import { ExamRoom } from './pages/ExamRoom'
@@ -10,4 +11,4 @@ import { Teacher } from './pages/Teacher'
 import { Admin } from './pages/Admin'
 import { Settings } from './pages/Settings'
 import { Pending } from './pages/Pending'
-export default function App(){return <BrowserRouter><AuthProvider><Routes><Route path="/login" element={<AuthPage/>}/><Route path="/signup" element={<AuthPage signup/>}/><Route path="/teacher-pending" element={<Pending/>}/><Route element={<ProtectedRoute/>}><Route element={<AppLayout/>}><Route index element={<Dashboard/>}/><Route path="exams" element={<Exams/>}/><Route path="exam/:id" element={<ExamRoom/>}/><Route path="settings" element={<Settings/>}/><Route element={<ProtectedRoute roles={['teacher','admin']}/> }><Route path="teacher" element={<Teacher/>}/></Route><Route element={<ProtectedRoute roles={['admin']}/> }><Route path="admin" element={<Admin/>}/></Route></Route></Route><Route path="*" element={<Navigate to="/" replace/>}/></Routes></AuthProvider></BrowserRouter>}
+export default function App(){return <BrowserRouter><AuthProvider><Routes><Route path="/login" element={<AuthPage/>}/><Route path="/signup" element={<AuthPage signup/>}/><Route path="/auth/callback" element={<AuthCallback/>}/><Route path="/teacher-pending" element={<Pending/>}/><Route element={<ProtectedRoute/>}><Route element={<AppLayout/>}><Route index element={<Dashboard/>}/><Route path="exams" element={<Exams/>}/><Route path="exam/:id" element={<ExamRoom/>}/><Route path="settings" element={<Settings/>}/><Route element={<ProtectedRoute roles={['teacher','admin']}/> }><Route path="teacher" element={<Teacher/>}/></Route><Route element={<ProtectedRoute roles={['admin']}/> }><Route path="admin" element={<Admin/>}/></Route></Route></Route><Route path="*" element={<Navigate to="/" replace/>}/></Routes></AuthProvider></BrowserRouter>}

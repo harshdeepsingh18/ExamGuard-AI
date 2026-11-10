@@ -24,12 +24,12 @@ Exam start and submission use Postgres functions. Students never have direct SEL
 ## Local setup
 
 1. Create a Supabase project at [supabase.com](https://supabase.com).
-2. In Supabase **SQL Editor**, run `supabase/migrations/202611100001_initial_schema.sql`, then `202611100002_teacher_result_names.sql`, `202611100003_approved_teacher_enforcement.sql`, `202611100004_exam_answer_autosave.sql`, `202611100005_profile_recovery.sql`, and `202611100006_profiles_teacher_status.sql`.
+2. In Supabase **SQL Editor**, run the migration files in numeric order from `202611100001_initial_schema.sql` through `202611100007_fresh_auth_profiles.sql`. The final migration installs the fresh auth trigger and removes the obsolete profile recovery RPC.
 3. In project **Settings > API**, copy the Project URL and anon/public key. Never use the service-role key in this browser app.
 4. Copy `.env.example` to `.env` and fill:
    - `VITE_SUPABASE_URL`: Supabase project URL.
    - `VITE_SUPABASE_ANON_KEY`: Supabase publishable/anon key.
-   - `VITE_APP_URL`: frontend origin used for OAuth and password reset (local default `http://localhost:5173`; production must be your deployed HTTPS origin).
+   - The app uses the current browser origin for OAuth, signup verification, and password reset redirects. No separate frontend URL variable is needed.
 5. Run `npm install`, then `npm run dev`.
 
 ## Supabase Auth configuration
@@ -37,7 +37,7 @@ Exam start and submission use Postgres functions. Students never have direct SEL
 In **Authentication > URL Configuration**:
 
 - Site URL: your canonical frontend URL.
-- Redirect URLs: add the local frontend origin for development and the exact production origin/callback URL used by the deployed app. Avoid wildcard redirects in production.
+- Redirect URLs: add `http://localhost:5173/auth/callback` for development and the exact production `https://your-domain/auth/callback` URL. Add the app origin as the Site URL. Avoid wildcard redirects in production.
 
 To enable Google in **Authentication > Providers > Google**:
 
@@ -47,7 +47,7 @@ To enable Google in **Authentication > Providers > Google**:
 4. Put the Google client ID and secret into Supabase provider settings. Do not put the client secret in this repository.
 5. Confirm the production site and redirects in Supabase URL Configuration.
 
-Email verification and reset email templates are configured in Supabase Auth. Signup requests a verification email when enabled.
+Email verification and reset email templates are configured in Supabase Auth. Signup requests a verification email when enabled. Every new auth user gets a `public.profiles` row from the database trigger in the same transaction, including a first-time Google user. Do not create profiles from the browser.
 
 ## First admin
 
@@ -62,11 +62,11 @@ Treat this provisioning step as an owner-only operation. Admins can approve/reje
 
 ## Deploy
 
-Build with `npm run build`; deploy `dist/` to any static host. Configure the three `VITE_*` variables in that host's build environment. Set `VITE_APP_URL` to the production HTTPS origin and add the same origin to Supabase Site URL and Redirect URLs. No Express API or server secret is needed for the current feature set; Supabase RPCs enforce exam submission and teacher review. Do not deploy a service-role key to the frontend.
+Build with `npm run build`; deploy `dist/` to any static host. Configure `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in that host's build environment. Add the deployed `/auth/callback` URL to Supabase Redirect URLs. No Express API or server secret is needed for the current feature set; Supabase RPCs enforce exam submission and teacher review. Do not deploy a service-role key to the frontend.
 
 ## Included workflows
 
-- Email/password signup and login, Google OAuth, password reset, persistent sessions, sign out
+- Supabase email/password signup and login, Google OAuth sign-in/sign-up, password reset, automatic profile creation, persistent sessions, sign out
 - Student dashboard, published exam browsing, timed exam sessions, server-side scoring, result history, notifications, profile editing
 - Pending teacher onboarding; approved teacher exam creation, question authoring, publishing, deleting, and student result review
 - Admin teacher request review, user role management, exam monitoring, and overview analytics
@@ -83,7 +83,7 @@ Build with `npm run build`; deploy `dist/` to any static host. Configure the thr
 
 ## Verification
 
-The build and lint commands are available as `npm run build` and `npm run lint`. Supabase-backed flows require a configured project and credentials; the SQL migrations must be applied before authentication profile creation and dashboard operations work. End-to-end Google/email verification, RLS policies, and production redirect behavior need project credentials and a deployed origin to validate.
+Run `npm run build` and `npm run lint` for the client checks. To check first-user profile creation against a completely empty Auth user table, run `supabase/tests/fresh_auth_profiles.sql` in the Supabase SQL Editor after applying all migrations; the script inserts temporary email and Google-shaped auth rows, checks their profiles, and rolls back. Complete browser OAuth still requires the Google provider credentials and allowed redirect URLs configured above.
 
 
 

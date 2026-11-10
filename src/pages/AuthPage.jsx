@@ -4,6 +4,8 @@ import { Eye, EyeOff, ShieldCheck, Mail, ArrowLeft } from 'lucide-react'
 import { configured, supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 
+const callbackUrl = () => `${window.location.origin}/auth/callback`
+
 export function AuthPage({ signup = false }) {
  const recovery = new URLSearchParams(window.location.search).get('mode') === 'recovery'
  const [mode, setMode] = useState(signup ? 'signup' : recovery ? 'newpassword' : 'login')
@@ -23,7 +25,7 @@ export function AuthPage({ signup = false }) {
   if (mode === 'signup' && !terms) { setError('Please accept the terms to continue.'); return }
   run(async () => {
    if (mode === 'signup') {
-    const { data, error: e } = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName, account_type: role }, emailRedirectTo: import.meta.env.VITE_APP_URL || window.location.origin } })
+    const { data, error: e } = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName, account_type: role }, emailRedirectTo: callbackUrl() } })
     if (e) throw e
     if (data.session) nav('/')
     else setMessage('Check your inbox to verify your email, then sign in.')
@@ -32,7 +34,7 @@ export function AuthPage({ signup = false }) {
     if (e) throw e
     nav('/')
    } else if (mode === 'reset') {
-    const { error: e } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${import.meta.env.VITE_APP_URL || window.location.origin}/login?mode=recovery` })
+    const { error: e } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/login?mode=recovery` })
     if (e) throw e
     setMessage('Password reset instructions have been sent if that email is registered.')
    } else {
@@ -45,7 +47,7 @@ export function AuthPage({ signup = false }) {
  }
  const google = () => run(async () => {
   if (!configured) throw Error('Set Supabase environment variables before continuing.')
-  const { error: e } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: import.meta.env.VITE_APP_URL || window.location.origin } })
+  const { error: e } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: callbackUrl() } })
   if (e) throw e
  })
  const heading = mode === 'signup' ? 'Build your confidence.' : mode === 'reset' ? 'Reset your password.' : mode === 'newpassword' ? 'Choose a new password.' : 'Welcome back.'
