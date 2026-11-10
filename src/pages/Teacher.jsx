@@ -207,6 +207,7 @@ export function Teacher() {
   if (profile?.teacher_status !== 'approved' && profile?.role !== 'admin') return <div className="notice">Teacher access must be approved before you can create or manage exams.</div>
 
   const onlineExams = exams.filter(exam => exam.exam_type === 'online')
+  const canManagePdfs = profile.role === 'teacher' && profile.teacher_status === 'approved'
   const publishedCount = exams.filter(exam => exam.published).length
   const average = results.length ? `${Math.round(results.reduce((sum, row) => sum + (row.max_score ? row.score / row.max_score * 100 : 0), 0) / results.length)}%` : '—'
 
@@ -224,7 +225,7 @@ export function Teacher() {
           <div className="row"><Field label="Duration (minutes)"><input className="input" type="number" min="1" max="600" value={duration} onChange={event => setDuration(event.target.value)}/></Field><Field label="Passing marks"><input className="input" type="number" min="0" step="0.5" value={passing} onChange={event => setPassing(event.target.value)}/></Field></div>
           <fieldset className="exam-type-picker"><legend>Question format</legend>
             <label className={`exam-type-option ${examType === 'online' ? 'selected' : ''}`}><input type="radio" name="exam-type" value="online" checked={examType === 'online'} onChange={() => setExamType('online')}/><span><b>Online questions</b><small>Add questions and answer options in ExamGuard.</small></span></label>
-            <label className={`exam-type-option ${examType === 'pdf' ? 'selected' : ''}`}><input type="radio" name="exam-type" value="pdf" checked={examType === 'pdf'} onChange={() => setExamType('pdf')}/><span><b>PDF question paper</b><small>Upload a paper for students to view during the timed exam.</small></span></label>
+            <label className={`exam-type-option ${examType === 'pdf' ? 'selected' : ''}`}><input type="radio" name="exam-type" value="pdf" checked={examType === 'pdf'} disabled={!canManagePdfs} onChange={() => setExamType('pdf')}/><span><b>PDF question paper</b><small>{canManagePdfs ? 'Upload a paper for students to view during the timed exam.' : 'PDF uploads are available to approved teacher owners.'}</small></span></label>
           </fieldset>
           <button className="btn" disabled={busy}>{busy ? 'Creating...' : 'Create draft exam'}</button>
         </form>
@@ -247,8 +248,8 @@ export function Teacher() {
     <div className="section-heading"><h2>Manage your exams</h2></div>
     <div className="grid">
       {exams.map(exam => <section className="card" key={exam.id}>
-        <div className="row between"><div><div className="row"><span className="badge">{exam.exam_type === 'pdf' ? 'PDF PAPER' : 'ONLINE'}</span><span className={`badge ${exam.published ? '' : 'pending'}`}>{exam.published ? 'Published' : 'Draft'}</span></div><h3>{exam.title}</h3><p className="muted small">{exam.duration_minutes} min · {exam.exam_type === 'pdf' ? 'PDF question paper' : `${exam.question_count} questions`}</p></div><button className="btn danger" onClick={() => deleteExam(exam)}>Delete exam</button></div>
-        {exam.exam_type === 'pdf' && <PdfUploadCard exam={exam} file={files[exam.id]} onFile={file => setSelectedFile(exam.id, file)} progress={progress[exam.id] || 0} uploading={uploadingId === exam.id} preview={previews[exam.id]} onUpload={() => uploadPaper(exam)} onRemove={() => removePaper(exam)} onPreview={() => previewPaper(exam)} />}
+        <div className="row between"><div><div className="row"><span className="badge">{exam.exam_type === 'pdf' ? 'PDF PAPER' : 'ONLINE'}</span><span className={`badge ${exam.published ? '' : 'pending'}`}>{exam.published ? 'Published' : 'Draft'}</span></div><h3>{exam.title}</h3><p className="muted small">{exam.duration_minutes} min · {exam.exam_type === 'pdf' ? 'PDF question paper' : `${exam.question_count} questions`}</p></div>{(!exam.pdf_storage_path || canManagePdfs) && <button className="btn danger" onClick={() => deleteExam(exam)}>Delete exam</button>}</div>
+        {exam.exam_type === 'pdf' && (canManagePdfs ? <PdfUploadCard exam={exam} file={files[exam.id]} onFile={file => setSelectedFile(exam.id, file)} progress={progress[exam.id] || 0} uploading={uploadingId === exam.id} preview={previews[exam.id]} onUpload={() => uploadPaper(exam)} onRemove={() => removePaper(exam)} onPreview={() => previewPaper(exam)} /> : <p className="muted small">Private PDF metadata: {exam.pdf_filename || 'Not uploaded'}{exam.pdf_size_bytes ? ` · ${formatFileSize(exam.pdf_size_bytes)}` : ''}. Only its approved teacher owner can manage or preview the file.</p>)}
         {exam.exam_type === 'online' && exam.question_count === 0 && <div className="notice">Add at least one question before publishing this exam.</div>}
         {!exam.published && <button className="btn" disabled={busy || (exam.exam_type === 'pdf' ? !exam.pdf_storage_path || !exam.pdf_enabled : exam.question_count === 0)} onClick={() => publishExam(exam)}>{exam.exam_type === 'pdf' && !exam.pdf_storage_path ? 'Upload a PDF to publish' : 'Publish exam'}</button>}
       </section>)}
