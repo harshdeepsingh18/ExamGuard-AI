@@ -77,6 +77,7 @@ create policy exam_pdf_reports_read on public.exam_pdf_reports
 create policy exam_pdf_reports_submit on public.exam_pdf_reports
   for insert to authenticated with check (
     reporter_id=auth.uid() and public.current_role()='student'
+    and status='pending' and reviewed_at is null and admin_note is null
     and exists (select 1 from public.exams e where e.id=exam_id and e.exam_type='pdf'
       and e.pdf_storage_path is not null and e.pdf_enabled and e.published
       and (e.available_from is null or e.available_from<=now())
@@ -89,6 +90,17 @@ revoke insert,update,delete on public.exam_pdf_reports from anon;
 
 -- Do not remove other Storage policies. These narrowly scoped policies require
 -- the exam UUID to be the first path segment and the exam row to match the object.
+do $$
+begin
+  if exists (select 1 from pg_policies p where p.schemaname='storage' and p.tablename='objects'
+    and p.policyname not in ('exam_pdf_storage_read','exam_pdf_storage_insert','exam_pdf_storage_delete')
+    and (('authenticated'=any(p.roles) and p.cmd in ('SELECT','ALL','INSERT'))
+      or (('public'=any(p.roles) or 'anon'=any(p.roles)) and p.cmd in ('SELECT','ALL','INSERT')))
+    and coalesce(p.qual,'')||' '||coalesce(p.with_check,'') not ilike '%bucket_id%') then
+    raise exception 'A broad Storage objects policy exists. Review it before enabling private exam PDF access.';
+  end if;
+end;
+$$;
 drop policy if exists exam_pdf_storage_read on storage.objects;
 drop policy if exists exam_pdf_storage_insert on storage.objects;
 drop policy if exists exam_pdf_storage_delete on storage.objects;
@@ -124,6 +136,9 @@ begin
   if new.published then
     if new.exam_type='pdf' and (new.pdf_storage_path is null or not new.pdf_enabled) then
       raise exception 'Upload and enable a question-paper PDF before publishing this exam';
+    elsif new.exam_type='pdf' and not exists(select 1 from storage.objects o
+      where o.bucket_id='exam-question-papers' and o.name=new.pdf_storage_path) then
+      raise exception 'The question-paper PDF is missing from private Storage';
     elsif new.exam_type='online' and not exists(select 1 from public.questions q where q.exam_id=new.id) then
       raise exception 'Add at least one online question before publishing this exam';
     end if;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { FileText, Upload, X, Eye, RefreshCw } from 'lucide-react'
 import { supabase, configured } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -27,7 +27,7 @@ export function Teacher() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [examResponse, resultResponse, questionResponse] = await Promise.all([
       supabase.from('exams').select('id,title,description,exam_type,pdf_storage_path,pdf_filename,pdf_size_bytes,pdf_enabled,published,duration_minutes,created_at').order('created_at', { ascending: false }),
       supabase.from('results').select('id,score,max_score,passed,published,created_at,exam:exams(title),student:profiles!results_student_id_fkey(full_name)').order('created_at', { ascending: false }).limit(30),
@@ -43,11 +43,11 @@ export function Teacher() {
     setExams(ownedExams)
     setResults(resultResponse.data || [])
     if (!examId && ownedExams.length) setExamId(ownedExams.find(exam => exam.exam_type === 'online')?.id || '')
-  }
+  }, [examId])
 
   useEffect(() => {
-    if (configured && profile?.teacher_status === 'approved') load()
-  }, [profile])
+    if (configured && (profile?.teacher_status === 'approved' || profile?.role === 'admin')) load()
+  }, [load, profile?.role, profile?.teacher_status])
 
   const createExam = async event => {
     event.preventDefault()
