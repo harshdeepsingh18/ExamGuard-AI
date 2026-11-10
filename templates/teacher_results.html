@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Results &amp; Reports | ExamGuard AI{% endblock %}
+{% block content %}
+<main class="dashboard-page"><div class="badge">TEACHER PORTAL</div><h1>Results &amp; <span class="accent">reports</span></h1>
+    {% if results %}<div class="content-stack">{% for result in results %}<section class="panel">
+        <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap"><div><h2>{{ result.exam_title }}</h2><p class="muted">{{ result.student_name }} · {{ result.total_marks }} total marks</p></div><span class="status status-{{ 'published' if result.published else 'draft' }}">{{ 'Published' if result.published else 'Awaiting review' }}</span></div>
+        <h3>Score: {{ result.marks_obtained }} / {{ result.total_marks }}</h3>
+        {% if result.answers %}<div class="content-stack">{% for answer in result.answers %}{% set q = answer.questions %}<article class="question"><strong>{{ q.prompt if q else 'Question' }}</strong><p class="muted">{{ q.question_type|replace('_',' ') if q else '' }} · {{ q.marks if q else '' }} marks</p><p>Student answer: {{ answer.answer }}</p>
+            {% if q and q.question_type in ['short_answer','long_answer'] and not result.published %}<form method="post" action="{{ url_for('grade_answer', answer_id=answer.id) }}" class="dashboard-actions" style="justify-content:flex-start"><label>Marks awarded <input class="answer-input" style="width:110px" type="number" name="marks_awarded" min="0" max="{{ q.marks }}" step="0.5" value="{{ answer.marks_awarded if answer.marks_awarded is not none else 0 }}" required></label><button class="secondary-btn" type="submit">Save Grade</button></form>
+            {% elif q and q.question_type in ['short_answer','long_answer'] %}<p class="muted">Awarded: {{ answer.marks_awarded if answer.marks_awarded is not none else 0 }} / {{ q.marks }}</p>{% endif %}
+        </article>{% endfor %}</div>{% endif %}
+        {% if result.events %}<details><summary>Monitoring events ({{ result.events|length }})</summary><ul>{% for event in result.events %}<li>{{ event.occurred_at[:19]|replace('T',' ') }} — {{ event.event_type|replace('_',' ') }}</li>{% endfor %}</ul><p class="form-note">Events may have ordinary causes and should be reviewed with context; they do not establish misconduct by themselves.</p></details>{% endif %}
+        {% if not result.published %}<form method="post" action="{{ url_for('publish_result', result_id=result.id) }}"><button class="primary-btn" type="submit">Publish Result</button></form>{% endif %}
+    </section>{% endfor %}</div>{% else %}<div class="panel muted">No student submissions yet.</div>{% endif %}
+</main>
+{% endblock %}

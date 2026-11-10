@@ -1,84 +1,46 @@
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ExamGuard AI | Smart Examination</title>
-
-    <link rel="stylesheet"
-    href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-
-<body>
-
-<nav class="navbar">
-    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
-
-    <div class="nav-links">
-        <a href="/">Home</a>
-        <a href="#features">Features</a>
-        <a href="#about">About</a>
-    </div>
-
-    <a href="/login" class="nav-btn">Get Started →</a>
-</nav>
-
-<section class="hero">
-
-    <div class="badge">✦ AI POWERED EXAMINATION PLATFORM</div>
-
-    <h1>
-        The Future of<br>
-        <span>Online Examination</span>
-    </h1>
-
-    <p>
-        Experience smarter online examinations with PDF question
-        extraction, intelligent monitoring and automated results.
-    </p>
-
-    <div class="hero-buttons">
-        <a href="/login" class="primary-btn">Get Started →</a>
-        <a href="#features" class="secondary-btn">Explore Features</a>
-    </div>
-
-    <div class="features" id="features">
-
-        <div class="card">
-            <div class="card-icon">📄</div>
-            <h3>PDF Questions</h3>
-            <p>Teachers can upload PDF question papers.</p>
+{% extends "base.html" %}
+{% block title %}ExamGuard AI | Smarter Exams. Fairer Results.{% endblock %}
+{% block content %}
+<main>
+    <section class="hero">
+        <div class="badge">✦ RESPONSIBLE AI EXAMINATION PLATFORM</div>
+        <h1>Examinations,<br><span>Reimagined with AI.</span></h1>
+        <p>Experience secure, intelligent, and transparent online examinations with tools that help teachers manage assessments and students focus on their work.</p>
+        <div class="hero-buttons">
+            <a href="{{ url_for('register') }}" class="primary-btn">Get Started →</a>
+            <a href="#features" class="secondary-btn">Explore Features</a>
         </div>
-
-        <div class="card">
-            <div class="card-icon">🤖</div>
-            <h3>AI Proctoring</h3>
-            <p>Exam activity monitoring with computer vision.</p>
+        <div class="preview" aria-label="Preview of the ExamGuard examination dashboard">
+            <div class="preview-top"><span>EXAMGUARD · EXAM OVERVIEW</span><span>● Session secure</span></div>
+            <div class="preview-layout">
+                <div class="preview-panel"><strong>Assessment workspace</strong><div class="preview-line"></div><div class="preview-line short"></div><div class="preview-stat">Question 04 of 20 · Answers saved</div></div>
+                <div class="preview-panel"><div class="preview-stat">◷ &nbsp;Time remaining</div><strong style="font-size:1.7rem">42:18</strong><div class="preview-stat">✓ &nbsp;Monitoring active</div></div>
+            </div>
         </div>
+    </section>
 
-        <div class="card">
-            <div class="card-icon">📊</div>
-            <h3>Smart Results</h3>
-            <p>Automatic evaluation and performance reports.</p>
+    <section class="section" id="features">
+        <div class="section-heading"><h2>Tools for a fairer exam experience</h2><p>One workspace for assessments, exam sessions, and results.</p></div>
+        <div class="grid">
+            <article class="card"><div class="card-icon">◉</div><h3>Visible monitoring</h3><p>Students receive clear notice when browser activity and camera permission are used during an exam.</p></article>
+            <article class="card"><div class="card-icon">▤</div><h3>PDF question papers</h3><p>Upload text based PDFs and review extracted content before publishing an assessment.</p></article>
+            <article class="card"><div class="card-icon">✓</div><h3>Structured exams</h3><p>Create objective and written questions with marks, exam rules, and timed student attempts.</p></article>
+            <article class="card"><div class="card-icon">↗</div><h3>Autosaved answers</h3><p>Student responses are saved as they work, with a clear submitted state at the end.</p></article>
+            <article class="card"><div class="card-icon">▥</div><h3>Results and reports</h3><p>Review submissions and publish exam scores to students when ready.</p></article>
+            <article class="card"><div class="card-icon">⌑</div><h3>Role protected access</h3><p>Separate student and approved teacher access backed by Supabase authentication and row policies.</p></article>
         </div>
+    </section>
 
-    </div>
-
-</section>
-
-<section class="about" id="about">
-    <h2>Examinations made smarter.</h2>
-    <p>
-        ExamGuard AI brings examination management,
-        digital question papers and responsible AI monitoring
-        together in one platform.
-    </p>
-</section>
-
-<footer>
-    © 2026 ExamGuard AI. All rights reserved.
-</footer>
-
-</body>
-</html>
+    <section class="about" id="how-it-works">
+        <div class="section">
+            <div class="section-heading"><h2>A clear path from setup to results</h2><p>ExamGuard keeps the assessment workflow in one place.</p></div>
+            <div class="grid steps">
+                <article class="card step"><h3>Teacher creates an exam</h3><p>Set the schedule, upload a paper, and add questions and answer keys.</p></article>
+                <article class="card step"><h3>Student joins the session</h3><p>Students open an available exam and answer in a timed workspace.</p></article>
+                <article class="card step"><h3>Review and publish</h3><p>Teachers review attempts and publish the results when they are ready.</p></article>
+            </div>
+        </div>
+    </section>
+    <section class="section" id="about"><div class="section-heading"><h2>Smarter Exams. Fairer Results.</h2><p>ExamGuard AI supports secure digital assessments with clear monitoring and human review. Automated signals provide context and should never be treated as proof of misconduct on their own.</p></div></section>
+</main>
+{% endblock %}

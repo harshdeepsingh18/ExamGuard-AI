@@ -1,51 +1,18 @@
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Login | ExamGuard AI</title>
-    <link rel="stylesheet"
-    href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-
-<nav class="navbar">
-    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
-    <a href="/register" class="nav-btn">Register</a>
-</nav>
-
-<section class="login-section">
+{% extends "base.html" %}
+{% block title %}Login | ExamGuard AI{% endblock %}
+{% block content %}
+<main class="login-section">
     <div class="badge">SECURE ACCOUNT LOGIN</div>
-
-    <h1>Welcome <span>Back!</span></h1>
-    <p>Login to your ExamGuard AI account.</p>
-
-    {% if error %}
-        <p style="color:#ff7777">{{ error }}</p>
-    {% endif %}
-
-    {% if message %}
-        <p style="color:#80e6a5">{{ message }}</p>
-    {% endif %}
-
-    <form method="POST" class="auth-form">
-
-        <input type="email" name="email"
-               placeholder="Email Address" required>
-
-        <input type="password" name="password"
-               placeholder="Password" required>
-
-        <button type="submit" class="primary-btn">
-            Login →
-        </button>
+    <h1>Welcome <span>back</span></h1>
+    <p>Log in to your ExamGuard AI account.</p>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+    <form method="post" class="auth-form">
+        <div class="field"><label for="email">Email address</label><input id="email" type="email" name="email" autocomplete="email" required></div>
+        <div class="field"><label for="password">Password</label><input id="password" type="password" name="password" autocomplete="current-password" required></div>
+        <button type="submit" class="primary-btn">Login →</button>
     </form>
-
-    <p>Don't have an account?
-        <a href="/register" class="back-link">Register</a>
-    </p>
-</section>
-
-</body>
-</html>
+    <p><a class="text-link" href="{{ url_for('forgot_password') }}">Forgot password?</a></p>
+    <p>New to ExamGuard? <a class="text-link" href="{{ url_for('register') }}">Create an account</a></p>
+</main>
+{% endblock %}

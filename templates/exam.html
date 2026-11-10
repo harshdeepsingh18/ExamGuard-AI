@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ exam.title }} | ExamGuard AI{% endblock %}
+{% block content %}
+<header class="exam-top"><div><strong>{{ exam.title }}</strong><br><span class="muted">{{ profile.full_name }} · {{ exam.subject }}</span></div><div class="timer" id="exam-timer" data-started="{{ attempt.started_at }}" data-duration="{{ exam.duration_minutes }}">--:--</div></header>
+<main class="exam-layout" id="exam-app" data-attempt-id="{{ attempt.id }}" data-exam-id="{{ exam.id }}">
+    <aside class="panel exam-aside"><strong>Questions</strong><div class="question-nav" id="question-nav">{% for question in questions %}<button type="button" data-question="{{ loop.index0 }}" aria-label="Question {{ loop.index }}">{{ loop.index }}</button>{% endfor %}</div><p class="monitor-status">Autosave <strong id="save-status">Ready</strong></p></aside>
+    <section class="panel">
+        <div class="alert">Monitoring notice: ExamGuard logs tab visibility and fullscreen exit events. These signals can have ordinary causes and are not proof of misconduct. No video is recorded or stored.</div>
+        {% if exam.rules %}<div class="alert"><strong>Exam rules:</strong><br>{{ exam.rules }}</div>{% endif %}
+        {% for question in questions %}<article class="exam-question question{% if loop.first %} active{% endif %}" id="question-{{ loop.index0 }}" data-question-id="{{ question.id }}" data-type="{{ question.question_type }}">
+            <div class="muted">Question {{ loop.index }} of {{ questions|length }} · {{ question.marks }} marks</div><h2>{{ question.prompt }}</h2>
+            {% if question.question_type in ['multiple_choice','true_false'] %}
+                {% for option in question.options %}<label class="option"><input type="radio" name="answer-{{ question.id }}" value="{{ option }}" {% if answers.get(question.id) == option %}checked{% endif %}> <span>{{ option }}</span></label>{% endfor %}
+            {% elif question.question_type == 'multiple_select' %}
+                {% for option in question.options %}<label class="option"><input type="checkbox" name="answer-{{ question.id }}" value="{{ option }}" {% if option in answers.get(question.id, []) %}checked{% endif %}> <span>{{ option }}</span></label>{% endfor %}
+            {% elif question.question_type == 'short_answer' %}<input class="answer-input" type="text" name="answer-{{ question.id }}" value="{{ answers.get(question.id, '') }}" maxlength="1000" aria-label="Your answer">
+            {% else %}<textarea class="answer-input" name="answer-{{ question.id }}" rows="8" maxlength="10000" aria-label="Your answer">{{ answers.get(question.id, '') }}</textarea>{% endif %}
+        </article>{% else %}<div class="alert alert-error">This exam has no questions. Contact your teacher.</div>{% endfor %}
+        {% if questions %}<div class="exam-controls"><button id="previous-question" class="secondary-btn" type="button">← Previous</button><button id="next-question" class="secondary-btn" type="button">Next →</button></div>{% endif %}
+    </section>
+    <aside class="panel exam-aside"><strong>Exam information</strong><p class="muted">{{ exam.duration_minutes }} minutes<br>{{ exam.total_marks }} total marks<br>Started {{ attempt.started_at[:16]|replace('T',' ') }}</p><p class="monitor-status">Monitoring events are provided to the teacher for review with context.</p><form id="submit-exam" method="post" action="{{ url_for('submit_exam', exam_id=exam.id) }}"><button class="primary-btn" type="submit">Submit Exam</button></form></aside>
+</main>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/exam.js') }}" defer></script>{% endblock %}

@@ -1,56 +1,25 @@
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Student Dashboard | ExamGuard AI</title>
-
-    <link rel="stylesheet"
-    href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-
-<body>
-
-<nav class="navbar">
-    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
-</nav>
-
-<section class="dashboard">
-
+{% extends "base.html" %}
+{% block title %}Student Dashboard | ExamGuard AI{% endblock %}
+{% block content %}
+<main class="dashboard-page dashboard">
     <div class="badge">STUDENT PORTAL</div>
-
-    <h1>Welcome, <span>{{ profile.full_name if profile else "Student" }}</span></h1>
-
+    <h1>Welcome back, <span>{{ profile.full_name if profile else "Student" }}</span></h1>
     {% if pending_approval %}
-        <p>Your teacher account request is awaiting approval.
-        You currently do not have teacher access.</p>
+        <p>Your teacher account request is awaiting approval. You currently have student access only.</p>
+        <div class="alert">An administrator must approve teacher access before you can use teacher tools.</div>
     {% else %}
         <p>Your examination workspace is ready.</p>
+        <div class="stat-grid">
+            <div class="stat-card"><span>Available exams</span><strong>{{ total_exams|default(0) }}</strong></div>
+            <div class="stat-card"><span>Completed exams</span><strong>{{ completed_exams|default(0) }}</strong></div>
+            <div class="stat-card"><span>Published results</span><strong>{{ results_count|default(0) }}</strong></div>
+            <div class="stat-card"><span>Average score</span><strong>{{ average_score|default(0) }}%</strong></div>
+        </div>
+        <div class="dashboard-grid">
+            <article class="card"><div class="card-icon">📝</div><h3>Available Exams</h3><p>View scheduled exams and start an eligible attempt.</p><a class="primary-btn" href="{{ url_for('available_exams') }}">Browse Exams</a></article>
+            <article class="card"><div class="card-icon">📊</div><h3>My Results</h3><p>Review results published by your teachers.</p><a class="secondary-btn" href="{{ url_for('student_results') }}">View Results</a></article>
+            <article class="card"><div class="card-icon">🛡</div><h3>Exam Monitoring</h3><p>Exam sessions may log tab visibility and fullscreen changes. Camera access is requested before use.</p></article>
+        </div>
     {% endif %}
-
-    <div class="dashboard-grid">
-
-        <div class="card">
-            <div class="card-icon">📝</div>
-            <h3>My Examinations</h3>
-            <p>View and attend available examinations.</p>
-            <button class="primary-btn" disabled>Coming Soon</button>
-        </div>
-
-        <div class="card">
-            <div class="card-icon">📊</div>
-            <h3>My Results</h3>
-            <p>Check your examination performance.</p>
-            <button class="primary-btn" disabled>Coming Soon</button>
-        </div>
-
-    </div>
-
-    <br>
-    <a href="/logout" class="primary-btn">Logout</a>
-
-</section>
-
-</body>
-</html>
+</main>
+{% endblock %}

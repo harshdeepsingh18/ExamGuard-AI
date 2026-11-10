@@ -1,58 +1,20 @@
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Teacher Dashboard | ExamGuard AI</title>
-
-    <link rel="stylesheet"
-    href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-
-<body>
-
-<nav class="navbar">
-    <a href="/" class="logo">🛡 ExamGuard <span>AI</span></a>
-</nav>
-
-<section class="dashboard">
-
+{% extends "base.html" %}
+{% block title %}Teacher Dashboard | ExamGuard AI{% endblock %}
+{% block content %}
+<main class="dashboard-page dashboard">
     <div class="badge">TEACHER PORTAL</div>
-
     <h1>Welcome, <span>{{ profile.full_name }}</span></h1>
-
     <p>Your teacher dashboard is ready.</p>
-
-    <div class="dashboard-grid">
-
-        <div class="card">
-            <div class="card-icon">📄</div>
-            <h3>Upload Question Paper</h3>
-            <p>Upload PDF examination papers.</p>
-            <button class="primary-btn" disabled>Coming Soon</button>
-        </div>
-
-        <div class="card">
-            <div class="card-icon">📝</div>
-            <h3>Manage Exams</h3>
-            <p>Manage your online examinations.</p>
-            <button class="primary-btn" disabled>Coming Soon</button>
-        </div>
-
-        <div class="card">
-            <div class="card-icon">📊</div>
-            <h3>Student Reports</h3>
-            <p>Review examination reports.</p>
-            <button class="primary-btn" disabled>Coming Soon</button>
-        </div>
-
+    <div class="stat-grid">
+        <div class="stat-card"><span>Total examinations</span><strong>{{ exam_count|default(0) }}</strong></div>
+        <div class="stat-card"><span>Published exams</span><strong>{{ published_count|default(0) }}</strong></div>
+        <div class="stat-card"><span>Draft exams</span><strong>{{ (exam_count|default(0)) - (published_count|default(0)) }}</strong></div>
+        <div class="stat-card"><span>Student submissions</span><strong>{{ submission_count|default(0) }}</strong></div>
     </div>
-
-    <br>
-    <a href="/logout" class="primary-btn">Logout</a>
-
-</section>
-
-</body>
-</html>
+    <div class="dashboard-grid">
+        <article class="card"><div class="card-icon">📄</div><h3>Create Exam</h3><p>Set exam details, upload a text based PDF, and create structured questions.</p><a href="{{ url_for('teacher_exams') }}" class="primary-btn">Manage Exams</a></article>
+        <article class="card"><div class="card-icon">📝</div><h3>Manage Exams</h3><p>Review drafts, edit questions, and publish exams for students.</p><a href="{{ url_for('teacher_exams') }}" class="secondary-btn">Open Exams</a></article>
+        <article class="card"><div class="card-icon">📊</div><h3>Student Reports</h3><p>Review submitted attempts and publish automatically scored results.</p><a href="{{ url_for('teacher_results') }}" class="secondary-btn">View Reports</a></article>
+    </div>
+</main>
+{% endblock %}
