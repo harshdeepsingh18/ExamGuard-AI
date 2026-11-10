@@ -23,6 +23,7 @@
         <button type="submit" class="primary-btn">Login →</button>
     </form>
     <p><a class="text-link" href="{{ url_for('forgot_password') }}">Forgot password?</a></p>
+    <p>Need a new confirmation email? <a class="text-link" href="{{ url_for('resend_confirmation') }}">Resend it</a></p>
     <p>New to ExamGuard? <a class="text-link" href="{{ url_for('register') }}">Create an account</a></p>
 </main>
 {% endblock %}

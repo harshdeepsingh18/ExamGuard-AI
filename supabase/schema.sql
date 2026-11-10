@@ -471,3 +471,12 @@ drop policy if exists question_papers_owner_read on storage.objects;
 create policy question_papers_owner_read on storage.objects for select to authenticated using (
     bucket_id = 'question-papers' and (owner_id = auth.uid()::text or (public.is_approved_teacher(auth.uid()) and exists(select 1 from public.exams e where e.question_paper_path = name and e.teacher_id = auth.uid())))
 );
+drop policy if exists question_papers_student_read on storage.objects;
+create policy question_papers_student_read on storage.objects for select to authenticated using (
+    bucket_id = 'question-papers' and public.is_student_account(auth.uid()) and exists(
+        select 1 from public.exams e
+        join public.exam_attempts a on a.exam_id = e.id
+        where e.question_paper_path = name and e.published
+          and a.student_id = auth.uid() and a.status = 'in_progress'
+    )
+);

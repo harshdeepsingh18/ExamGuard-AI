@@ -28,6 +28,8 @@ Flask and Supabase examination platform for teacher-managed assessments, timed s
 
    Use the Supabase anon/publishable key only. Never put a service-role key in the app or browser. Add both redirect URLs to Supabase Auth's allowed redirect URLs. For local development, open the app using the same host in the URL (here, `127.0.0.1`) and use the corresponding callback URL in Supabase. For an HTTPS deployment, set `SESSION_COOKIE_SECURE=true` and use HTTPS redirect URLs.
 
+   Email confirmation and password recovery use Supabase PKCE, so open each email link in the same browser profile where you started the request. The callback URL must exactly match the running app and an allowed Supabase redirect URL. Apply the schema in step 2 before confirming an account so its profile is created.
+
 4. To enable Google sign-in, enable Google under Supabase **Authentication → Sign In / Providers**, enter the Google OAuth Client ID and Client Secret, and add `http://127.0.0.1:5000/auth/callback` to Supabase Auth's allowed redirect URLs. In Google Cloud, add the Supabase project's callback URL shown in its Google provider settings as an authorized redirect URI. Then configure email confirmation and SMTP, and run:
 
    ```powershell

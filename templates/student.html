@@ -4,6 +4,7 @@
 <main class="dashboard-page dashboard">
     <div class="badge">STUDENT PORTAL</div>
     <h1>Welcome back, <span>{{ profile.full_name if profile else "Student" }}</span></h1>
+    {% if dashboard_error %}<div class="alert alert-error">{{ dashboard_error }}</div>{% endif %}
     {% if pending_approval %}
         <p>Your teacher account request is awaiting approval. You currently have student access only.</p>
         <div class="alert">An administrator must approve teacher access before you can use teacher tools.</div>

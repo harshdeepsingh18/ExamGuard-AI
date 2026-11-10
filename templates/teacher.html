@@ -4,6 +4,7 @@
 <main class="dashboard-page dashboard">
     <div class="badge">TEACHER PORTAL</div>
     <h1>Welcome, <span>{{ profile.full_name }}</span></h1>
+    {% if dashboard_error %}<div class="alert alert-error">{{ dashboard_error }}</div>{% endif %}
     <p>Your teacher dashboard is ready.</p>
     <div class="stat-grid">
         <div class="stat-card"><span>Total examinations</span><strong>{{ exam_count|default(0) }}</strong></div>

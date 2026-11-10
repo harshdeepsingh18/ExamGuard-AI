@@ -7,6 +7,7 @@
     <section class="panel">
         <div class="alert">Monitoring notice: ExamGuard logs tab visibility and fullscreen exit events. These signals can have ordinary causes and are not proof of misconduct. No video is recorded or stored.</div>
         {% if exam.rules %}<div class="alert"><strong>Exam rules:</strong><br>{{ exam.rules }}</div>{% endif %}
+        {% if question_paper_url %}<details class="panel question-paper-panel" open><summary><strong>Question paper PDF</strong></summary><iframe title="Question paper PDF" src="{{ question_paper_url }}" width="100%" height="640" style="border:0;margin-top:12px" loading="lazy"></iframe></details>{% endif %}
         {% for question in questions %}<article class="exam-question question{% if loop.first %} active{% endif %}" id="question-{{ loop.index0 }}" data-question-id="{{ question.id }}" data-type="{{ question.question_type }}" data-marked="{{ 'true' if question.id in marked_questions else 'false' }}">
             <div class="muted">Question {{ loop.index }} of {{ questions|length }} · {{ question.marks }} marks</div><h2>{{ question.prompt }}</h2>
             {% if question.question_type in ['multiple_choice','true_false'] %}

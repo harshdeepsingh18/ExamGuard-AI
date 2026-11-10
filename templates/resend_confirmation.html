@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Resend Confirmation | ExamGuard AI{% endblock %}
+{% block content %}
+<main class="login-section">
+    <div class="badge">EMAIL CONFIRMATION</div>
+    <h1>Resend your <span>confirmation</span></h1>
+    <p>Enter the email address you used to register.</p>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+    <form method="post" class="auth-form">
+        <div class="field"><label for="email">Email address</label><input id="email" type="email" name="email" autocomplete="email" maxlength="254" required></div>
+        <button type="submit" class="primary-btn">Resend confirmation email</button>
+    </form>
+    <p><a class="text-link" href="{{ url_for('auth_login') }}">Return to login</a></p>
+</main>
+{% endblock %}

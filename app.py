@@ -59,6 +59,14 @@ def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+def _get_pkce_verifier(client):
+    verifier_key = f"{client.auth._storage_key}-code-verifier"
+    verifier = client.auth._storage.get_item(verifier_key)
+    if not verifier:
+        raise RuntimeError("Supabase did not create an auth code verifier.")
+    return verifier
+
+
 # Create a client authenticated as the logged-in user
 def get_user_client():
     access_token = session.get("access_token")
@@ -189,6 +197,7 @@ def register():
             )
 
         try:
+            session.pop("auth_code_verifier", None)
             client = get_supabase()
             confirmation_redirect = os.getenv(
                 "AUTH_CONFIRM_REDIRECT_URL",
@@ -214,6 +223,7 @@ def register():
                 session["email"] = response.user.email
                 return redirect(url_for("dashboard"))
 
+            session["auth_code_verifier"] = _get_pkce_verifier(client)
             return render_template(
                 "auth_login.html",
                 message="Registration successful. Open the confirmation email, then return here to log in."
@@ -257,20 +267,22 @@ def auth_callback():
 
     oauth_code = request.args.get("code")
     if request.method == "GET" and oauth_code:
-        code_verifier = session.pop("oauth_code_verifier", None)
-        if not code_verifier:
+        stored_verifier = session.pop("auth_code_verifier", None)
+        if not stored_verifier:
+            stored_verifier = session.pop("oauth_code_verifier", None)
+        if not stored_verifier or stored_verifier.partition("/")[2] == "PASSWORD_RECOVERY":
             return render_template(
                 "auth_callback.html",
-                error="Google sign-in expired. Please start again."
+                error="Sign-in expired. Please start again."
             ), 400
         try:
             client = get_supabase()
             response = client.auth.exchange_code_for_session({
                 "auth_code": oauth_code,
-                "code_verifier": code_verifier
+                "code_verifier": stored_verifier.partition("/")[0]
             })
             if not response.session or not response.user:
-                raise ValueError("Google sign-in did not return a session.")
+                raise ValueError("Sign-in did not return a session.")
             session.clear()
             session["access_token"] = response.session.access_token
             session["refresh_token"] = response.session.refresh_token
@@ -278,10 +290,10 @@ def auth_callback():
             session["email"] = response.user.email
             return redirect(url_for("dashboard"))
         except Exception as error:
-            print("Google sign-in callback error:", error)
+            print("Sign-in callback error:", error)
             return render_template(
                 "auth_callback.html",
-                error="Google sign-in could not be completed. Please try again."
+                error="Sign-in could not be completed. Please try again."
             ), 400
 
     token_hash = request.args.get("token_hash")
@@ -314,6 +326,7 @@ def auth_callback():
 @app.route("/auth/google")
 def google_sign_in():
     try:
+        session.pop("auth_code_verifier", None)
         client = get_supabase()
         response = client.auth.sign_in_with_oauth({
             "provider": "google",
@@ -324,16 +337,42 @@ def google_sign_in():
                 )
             }
         })
-        verifier_key = f"{client.auth._storage_key}-code-verifier"
-        verifier = client.auth._storage.get_item(verifier_key)
-        if not verifier:
-            raise RuntimeError("Supabase did not create an OAuth PKCE verifier.")
-        session["oauth_code_verifier"] = verifier.partition("/")[0]
+        session["auth_code_verifier"] = _get_pkce_verifier(client)
         return redirect(response.url)
     except Exception as error:
         print("Google sign-in start error:", error)
         flash("Google sign-in is unavailable. Check the Google provider settings in Supabase.", "error")
         return redirect(url_for("auth_login"))
+
+
+@app.route("/resend-confirmation", methods=["GET", "POST"])
+def resend_confirmation():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        if not email or len(email) > 254:
+            return render_template("resend_confirmation.html", error="Enter a valid email address.")
+        try:
+            session.pop("auth_code_verifier", None)
+            confirmation_redirect = os.getenv(
+                "AUTH_CONFIRM_REDIRECT_URL",
+                url_for("auth_callback", _external=True)
+            )
+            get_supabase().auth.resend({
+                "type": "signup",
+                "email": email,
+                "options": {"email_redirect_to": confirmation_redirect}
+            })
+        except Exception as error:
+            print("Confirmation email resend error:", error)
+            return render_template(
+                "resend_confirmation.html",
+                error="A confirmation email could not be requested right now. Try again later."
+            )
+        return render_template(
+            "resend_confirmation.html",
+            message="If the account needs confirmation, a new email will be sent."
+        )
+    return render_template("resend_confirmation.html")
 
 
 @app.route("/forgot-password", methods=["GET", "POST"])
@@ -344,7 +383,10 @@ def forgot_password():
             return render_template("forgot_password.html", error="Enter the email address for your account.")
         try:
             redirect_to = os.getenv("PASSWORD_RESET_REDIRECT_URL", url_for("reset_password", _external=True))
-            get_supabase().auth.reset_password_for_email(email, options={"redirect_to": redirect_to})
+            session.pop("auth_code_verifier", None)
+            client = get_supabase()
+            client.auth.reset_password_for_email(email, options={"redirect_to": redirect_to})
+            session["auth_code_verifier"] = _get_pkce_verifier(client)
             return render_template("forgot_password.html", message="If the address is registered, a password reset link will be emailed to it.")
         except Exception as error:
             print("Password reset request error:", error)
@@ -377,6 +419,24 @@ def reset_password():
         except Exception as error:
             print("Password update error:", error)
             return render_template("reset_password.html", error="The reset link is invalid or expired. Request a new link.")
+    code = request.args.get("code")
+    if code:
+        stored_verifier = session.pop("auth_code_verifier", None)
+        if not stored_verifier or stored_verifier.partition("/")[2] != "PASSWORD_RECOVERY":
+            return render_template("reset_password.html", error="The reset link is invalid or expired. Request a new link."), 400
+        try:
+            recovery = get_supabase().auth.exchange_code_for_session({
+                "auth_code": code,
+                "code_verifier": stored_verifier.partition("/")[0]
+            })
+            if not recovery.session:
+                raise ValueError("Recovery code did not create a session.")
+            session["reset_access_token"] = recovery.session.access_token
+            session["reset_refresh_token"] = recovery.session.refresh_token
+            return redirect(url_for("reset_password"))
+        except Exception as error:
+            print("Password recovery code error:", error)
+            return render_template("reset_password.html", error="The reset link is invalid or expired. Request a new link."), 400
     token_hash = request.args.get("token_hash")
     if token_hash:
         try:
@@ -443,13 +503,19 @@ def dashboard():
         profile = get_profile()
 
         if not profile:
-            session.clear()
-            return redirect(url_for("auth_login"))
+            if not session.get("user_id"):
+                return redirect(url_for("auth_login"))
+            return render_template(
+                "student.html",
+                profile={"full_name": session.get("email", "Student")},
+                pending_approval=False,
+                dashboard_error="Your account is signed in, but its profile could not be loaded. Please ask the administrator to apply supabase/schema.sql and check the profiles table."
+            )
 
-        if profile["role"] == "teacher" and profile["teacher_approved"]:
+        if profile.get("role") == "teacher" and profile.get("teacher_approved"):
             return redirect(url_for("teacher"))
 
-        if profile["requested_role"] == "teacher":
+        if profile.get("requested_role") == "teacher":
             return render_template(
                 "student.html",
                 profile=profile,
@@ -460,8 +526,14 @@ def dashboard():
 
     except Exception as error:
         print("Dashboard error:", error)
-        session.clear()
-        return redirect(url_for("auth_login"))
+        if not session.get("user_id"):
+            return redirect(url_for("auth_login"))
+        return render_template(
+            "student.html",
+            profile={"full_name": session.get("email", "Student")},
+            pending_approval=False,
+            dashboard_error="You are signed in, but the dashboard could not load account data. Check the Flask console for the Supabase error and confirm supabase/schema.sql has been applied."
+        ), 503
 
 
 # Student dashboard
@@ -472,7 +544,14 @@ def student():
         profile = get_profile()
 
         if not profile:
-            return redirect(url_for("auth_login"))
+            if not session.get("user_id"):
+                return redirect(url_for("auth_login"))
+            return render_template(
+                "student.html",
+                profile={"full_name": session.get("email", "Student")},
+                pending_approval=False,
+                dashboard_error="Your login is active, but no account profile was found. Ask the administrator to apply supabase/schema.sql and check the profiles table."
+            ), 503
 
         if profile["role"] != "student":
             return redirect(url_for("dashboard"))
@@ -503,7 +582,14 @@ def student():
 
     except Exception as error:
         print("Student dashboard error:", error)
-        return redirect(url_for("auth_login"))
+        if not session.get("user_id"):
+            return redirect(url_for("auth_login"))
+        return render_template(
+            "student.html",
+            profile={"full_name": session.get("email", "Student")},
+            pending_approval=False,
+            dashboard_error="You are signed in, but dashboard data could not be loaded. Check the Flask console for the Supabase error and confirm supabase/schema.sql has been applied."
+        ), 503
 
 
 # Teacher dashboard
@@ -514,7 +600,13 @@ def teacher():
         profile = get_profile()
 
         if not profile:
-            return redirect(url_for("auth_login"))
+            if not session.get("user_id"):
+                return redirect(url_for("auth_login"))
+            return render_template(
+                "teacher.html",
+                profile={"full_name": session.get("email", "Teacher")},
+                dashboard_error="Your login is active, but no account profile was found. Ask the administrator to apply supabase/schema.sql and check the profiles table."
+            ), 503
 
         if profile["role"] != "teacher" or not profile["teacher_approved"]:
             return redirect(url_for("dashboard"))
@@ -537,7 +629,13 @@ def teacher():
 
     except Exception as error:
         print("Teacher dashboard error:", error)
-        return redirect(url_for("auth_login"))
+        if not session.get("user_id"):
+            return redirect(url_for("auth_login"))
+        return render_template(
+            "teacher.html",
+            profile={"full_name": session.get("email", "Teacher")},
+            dashboard_error="You are signed in, but teacher dashboard data could not be loaded. Check the Flask console for the Supabase error and confirm supabase/schema.sql has been applied."
+        ), 503
 
 
 # Teacher exam management. New exams stay unpublished until the teacher reviews
@@ -808,11 +906,28 @@ def take_exam(exam_id):
         print("Exam start error:", error)
         flash("This exam could not be opened.", "error")
         return redirect(url_for("available_exams"))
+    question_paper_url = None
+    if exam.get("question_paper_path"):
+        try:
+            remaining_seconds = max(
+                60,
+                int((attempt["started_at"] and (
+                    datetime.fromisoformat(attempt["started_at"].replace("Z", "+00:00"))
+                    + timedelta(minutes=int(exam["duration_minutes"]))
+                    - datetime.now(ZoneInfo("UTC"))
+                ).total_seconds()) or 60) + 60
+            )
+            signed = client.storage.from_("question-papers").create_signed_url(
+                exam["question_paper_path"], remaining_seconds
+            )
+            question_paper_url = signed.get("signedURL") or signed.get("signedUrl")
+        except Exception as error:
+            print("Question paper preview error:", error)
     return render_template("exam.html", profile=profile, exam=exam, attempt=attempt, questions=questions,
                            answers={a["question_id"]: a["answer"] for a in answers},
                            answered_questions={a["question_id"] for a in answers if a["answer"] not in (None, "", [])},
                            marked_questions={a["question_id"] for a in answers if a.get("is_marked")},
-                           event_count=event_count)
+                           event_count=event_count, question_paper_url=question_paper_url)
 
 
 @app.route("/api/attempt/<attempt_id>/answer", methods=["POST"])
