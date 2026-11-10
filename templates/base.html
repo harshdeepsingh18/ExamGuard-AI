@@ -27,6 +27,7 @@
     </div>
     <div class="nav-actions">
         {% if profile %}
+            <a class="secondary-btn" href="{{ url_for('account_profile') }}">Profile</a>
             {% if profile.role == 'teacher' %}<a class="secondary-btn" href="{{ url_for('teacher_exams') }}">Manage Exams</a>
             {% else %}<a class="secondary-btn" href="{{ url_for('available_exams') }}">Available Exams</a>{% endif %}
             <form method="post" action="{{ url_for('logout') }}"><button class="nav-btn" type="submit">Logout</button></form>

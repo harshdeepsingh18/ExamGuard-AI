@@ -51,6 +51,6 @@ Flask and Supabase examination platform for teacher-managed assessments, timed s
 
 - Scanned PDFs need OCR and are rejected with a clear message; only selectable text is extracted.
 - Teachers approve accounts manually in Supabase; there is no administrator UI yet.
-- Charts, settings/profile editing, exam announcements, question bank reuse, and exam editing after publication are not included.
+- Interactive time-series analytics, exam announcements, a reusable question bank, and an administrator approval UI are not included. The profile page edits the display name and links to password recovery. Teachers can edit drafts; a published exam can only be unpublished before any attempt exists.
 - Face detection needs the OpenCV and MediaPipe packages installed on the server. Camera access requires HTTPS or localhost and may not be available in every browser.
 - The default filesystem session store is suitable for a single server instance. Use a shared production session store when deploying multiple instances.

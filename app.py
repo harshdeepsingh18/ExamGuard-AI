@@ -128,6 +128,26 @@ def terms():
     return render_template("terms.html")
 
 
+@app.route("/profile", methods=["GET", "POST"])
+def account_profile():
+    profile, response = require_profile()
+    if response:
+        return response
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        if not full_name or len(full_name) > 120:
+            flash("Enter a name between 1 and 120 characters.", "error")
+        else:
+            try:
+                get_user_client().table("profiles").update({"full_name": full_name}).eq("id", profile["id"]).execute()
+                profile["full_name"] = full_name
+                flash("Profile updated.", "success")
+            except Exception as error:
+                print("Profile update error:", error)
+                flash("Profile could not be updated.", "error")
+    return render_template("profile.html", profile=profile)
+
+
 # Role selection
 @app.route("/login")
 def login():
@@ -186,6 +206,7 @@ def register():
                 session["access_token"] = response.session.access_token
                 session["refresh_token"] = response.session.refresh_token
                 session["user_id"] = response.user.id
+                session["email"] = response.user.email
                 return redirect(url_for("dashboard"))
 
             return render_template(
@@ -288,6 +309,7 @@ def auth_login():
             session["access_token"] = response.session.access_token
             session["refresh_token"] = response.session.refresh_token
             session["user_id"] = response.user.id
+            session["email"] = response.user.email
 
             return redirect(url_for("dashboard"))
 
@@ -348,7 +370,7 @@ def student():
         exam_rows = client.table("exams").select("id,title,subject,exam_date,start_time,duration_minutes").eq("published", True).order("exam_date").execute().data or []
         all_attempts = client.table("exam_attempts").select("id,status").eq("student_id", profile["id"]).execute().data or []
         attempts = client.table("exam_attempts").select("id,status,submitted_at,exams(title,subject)").eq("student_id", profile["id"]).order("created_at", desc=True).limit(5).execute().data or []
-        results = client.table("exam_results").select("marks_obtained,total_marks,exams(title,subject)").eq("student_id", profile["id"]).eq("published", True).execute().data or []
+        results = client.table("exam_results").select("marks_obtained,total_marks,graded_at,exams(title,subject)").eq("student_id", profile["id"]).eq("published", True).order("graded_at").execute().data or []
         notifications = client.table("notifications").select("title,body,created_at,read_at").eq("user_id", profile["id"]).order("created_at", desc=True).limit(5).execute().data or []
         average = round(sum(float(row["marks_obtained"]) / float(row["total_marks"]) * 100 for row in results if float(row["total_marks"]) > 0) / len(results)) if results else 0
         today = datetime.now(ZoneInfo(os.getenv("EXAM_TIMEZONE", "Asia/Kolkata"))).date().isoformat()
@@ -359,10 +381,13 @@ def student():
             score = float(result["marks_obtained"]) / float(result["total_marks"]) * 100 if float(result["total_marks"]) else 0
             subject_scores.setdefault(subject, []).append(score)
         performance = [{"subject": subject, "score": round(sum(scores) / len(scores))} for subject, scores in subject_scores.items()]
+        timeline = [{"label": (row.get("exams") or {}).get("title", "Exam"),
+                     "score": round(float(row["marks_obtained"]) / float(row["total_marks"]) * 100) if float(row["total_marks"]) else 0}
+                    for row in results[-10:]]
         return render_template("student.html", profile=profile, pending_approval=False,
                                total_exams=len(exam_rows), completed_exams=sum(1 for a in all_attempts if a["status"] != "in_progress"),
                                results_count=len(results), average_score=average, upcoming=upcoming,
-                               upcoming_count=len(upcoming), recent_attempts=attempts,
+                               upcoming_count=len(upcoming), recent_attempts=attempts, timeline=timeline,
                                notifications=notifications, performance=performance)
 
     except Exception as error:
@@ -568,13 +593,15 @@ def edit_exam(exam_id):
                 if kind == "multiple_choice" and correct not in options:
                     raise ValueError("The correct answer must match one of the options exactly.")
                 if kind == "multiple_select":
+                    if any("," in option for option in options):
+                        raise ValueError("For multiple-select questions, answer options cannot contain commas.")
                     selected = [part.strip() for part in correct.split(",") if part.strip()]
                     if not selected or any(answer not in options for answer in selected):
                         raise ValueError("Each correct answer must match an option exactly.")
                 question_id = str(uuid.uuid4())
                 client.table("questions").insert({
                     "id": question_id, "exam_id": exam_id,
-                    "position": len(questions) + 1, "question_type": kind,
+                    "position": max((int(q["position"]) for q in questions), default=0) + 1, "question_type": kind,
                     "prompt": prompt, "options": options, "marks": marks
                 }).execute()
                 if kind in ("multiple_choice", "multiple_select", "true_false"):
@@ -592,7 +619,9 @@ def edit_exam(exam_id):
         print("Exam editor error:", error)
         flash("Could not load or update this exam.", "error")
         return redirect(url_for("teacher_exams"))
-    attempt_count = client.table("exam_attempts").select("id", count="exact").eq("exam_id", exam_id).execute().count or 0 if exam.get("published") else 0
+    attempt_count = 0
+    if exam.get("published"):
+        attempt_count = client.table("exam_attempts").select("id", count="exact").eq("exam_id", exam_id).execute().count or 0
     return render_template("edit_exam.html", profile=profile, exam=exam, questions=questions, attempt_count=attempt_count)
 
 
@@ -660,13 +689,17 @@ def take_exam(exam_id):
             if request.method == "POST":
                 return redirect(url_for("take_exam", exam_id=exam_id))
         questions = client.table("questions").select("id,position,question_type,prompt,options,marks").eq("exam_id", exam_id).order("position").execute().data or []
-        answers = client.table("student_answers").select("question_id,answer").eq("attempt_id", attempt["id"]).execute().data or []
+        answers = client.table("student_answers").select("question_id,answer,is_marked").eq("attempt_id", attempt["id"]).execute().data or []
         event_count = client.table("proctoring_events").select("id", count="exact").eq("attempt_id", attempt["id"]).execute().count or 0
     except Exception as error:
         print("Exam start error:", error)
         flash("This exam could not be opened.", "error")
         return redirect(url_for("available_exams"))
-    return render_template("exam.html", profile=profile, exam=exam, attempt=attempt, questions=questions, answers={a["question_id"]: a["answer"] for a in answers}, event_count=event_count)
+    return render_template("exam.html", profile=profile, exam=exam, attempt=attempt, questions=questions,
+                           answers={a["question_id"]: a["answer"] for a in answers},
+                           answered_questions={a["question_id"] for a in answers if a["answer"] not in (None, "", [])},
+                           marked_questions={a["question_id"] for a in answers if a.get("is_marked")},
+                           event_count=event_count)
 
 
 @app.route("/api/attempt/<attempt_id>/answer", methods=["POST"])
@@ -677,14 +710,15 @@ def save_answer(attempt_id):
     payload = request.get_json(silent=True) or {}
     question_id = payload.get("question_id")
     answer = payload.get("answer")
-    if not question_id or answer is None:
+    marked = payload.get("marked_for_review", False)
+    if not question_id or answer is None or not isinstance(marked, bool):
         return jsonify(error="A question and answer are required."), 400
     try:
         client = get_user_client()
         attempt = client.table("exam_attempts").select("id,status").eq("id", attempt_id).eq("student_id", profile["id"]).single().execute().data
         if attempt["status"] != "in_progress":
             return jsonify(error="This exam has already been submitted."), 409
-        client.table("student_answers").upsert({"attempt_id": attempt_id, "question_id": question_id, "answer": answer}, on_conflict="attempt_id,question_id").execute()
+        client.table("student_answers").upsert({"attempt_id": attempt_id, "question_id": question_id, "answer": answer, "is_marked": marked}, on_conflict="attempt_id,question_id").execute()
         return jsonify(saved=True)
     except Exception as error:
         print("Answer save error:", error)
@@ -807,22 +841,44 @@ def teacher_results():
         return redirect(url_for("dashboard"))
     try:
         client = get_user_client()
-        exams = client.table("exams").select("id,title").eq("teacher_id", profile["id"]).execute().data or []
+        exams = client.table("exams").select("id,title,subject,passing_marks").eq("teacher_id", profile["id"]).execute().data or []
         results = []
         for exam in exams:
             rows = client.table("exam_results").select("*").eq("exam_id", exam["id"]).execute().data or []
             for row in rows:
                 row["exam_title"] = exam["title"]
+                row["subject"] = exam["subject"]
+                row["passing_marks"] = exam["passing_marks"]
                 people = client.table("profiles").select("full_name").eq("id", row["student_id"]).execute().data or []
                 row["student_name"] = people[0]["full_name"] if people else "Student"
-                row["answers"] = client.table("student_answers").select("id,answer,marks_awarded,questions(prompt,question_type,marks)").eq("attempt_id", row["attempt_id"]).execute().data or []
+                row["answers"] = client.table("student_answers").select("id,question_id,answer,marks_awarded,questions(prompt,question_type,marks)").eq("attempt_id", row["attempt_id"]).execute().data or []
+                row["current_score"] = 0.0
+                for answer in row["answers"]:
+                    question = answer.get("questions") or {}
+                    if question.get("question_type") in ("multiple_choice", "multiple_select", "true_false"):
+                        keys = client.table("question_keys").select("correct_answer").eq("question_id", answer["question_id"]).execute().data or []
+                        if keys and answer["answer"] == keys[0]["correct_answer"]:
+                            row["current_score"] += float(question.get("marks") or 0)
+                    else:
+                        row["current_score"] += float(answer.get("marks_awarded") or 0)
                 row["events"] = client.table("proctoring_events").select("event_type,occurred_at").eq("attempt_id", row["attempt_id"]).order("occurred_at").execute().data or []
                 results.append(row)
     except Exception as error:
         print("Teacher results error:", error)
         exams, results = [], []
         flash("Reports could not be loaded.", "error")
-    return render_template("teacher_results.html", profile=profile, results=results)
+    total_marks = [float(row["current_score"]) for row in results]
+    pass_rate = round(sum(1 for row in results if float(row["current_score"]) >= float(row["passing_marks"])) / len(results) * 100) if results else 0
+    subject_scores = {}
+    for row in results:
+        pct = float(row["current_score"]) / float(row["total_marks"]) * 100 if float(row["total_marks"]) else 0
+        subject_scores.setdefault(row["subject"], []).append(pct)
+    subject_performance = [{"subject": name, "score": round(sum(scores) / len(scores))} for name, scores in subject_scores.items()]
+    return render_template("teacher_results.html", profile=profile, results=results,
+                           participant_count=len({row["student_id"] for row in results}),
+                           average_marks=round(sum(total_marks) / len(total_marks), 1) if total_marks else 0,
+                           highest_marks=max(total_marks, default=0), lowest_marks=min(total_marks, default=0),
+                           pass_rate=pass_rate, subject_performance=subject_performance)
 
 
 @app.route("/teacher/answers/<answer_id>/grade", methods=["POST"])

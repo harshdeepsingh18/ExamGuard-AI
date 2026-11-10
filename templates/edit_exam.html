@@ -22,7 +22,7 @@
             <div class="field"><label for="correct_answer">Correct answer</label><input id="correct_answer" name="correct_answer" placeholder="For multiple select, separate answers with commas"></div>
             <div class="field full"><button class="primary-btn" type="submit">Add Question</button></div>
         </form>
-        {% if questions %}<form method="post"><input type="hidden" name="action" value="publish"><button class="primary-btn" type="submit">Publish Exam</button></form>{% endif %}{% else %}<div class="alert">Published exams are available to students and cannot be edited. An exam with attempts cannot be unpublished.</div><form method="post"><input type="hidden" name="action" value="unpublish"><button class="secondary-btn" type="submit">Unpublish Exam</button></form>{% endif %}
+        {% if questions %}<form method="post"><input type="hidden" name="action" value="publish"><button class="primary-btn" type="submit">Publish Exam</button></form>{% endif %}{% else %}<div class="alert">Published exams are available to students and cannot be edited. {% if attempt_count %}This exam has student attempts and cannot be unpublished.{% else %}You can unpublish this exam before any student starts it.{% endif %}</div>{% if not attempt_count %}<form method="post"><input type="hidden" name="action" value="unpublish"><button class="secondary-btn" type="submit">Unpublish Exam</button></form>{% endif %}{% endif %}
     </section>
 </main>
 {% endblock %}

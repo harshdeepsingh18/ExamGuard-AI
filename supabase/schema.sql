@@ -198,10 +198,12 @@ create table if not exists public.student_answers (
     attempt_id uuid not null references public.exam_attempts(id) on delete cascade,
     question_id uuid not null references public.questions(id) on delete cascade,
     answer jsonb not null default 'null'::jsonb,
+    is_marked boolean not null default false,
     marks_awarded numeric(8,2),
     updated_at timestamptz not null default now(),
     unique (attempt_id, question_id)
 );
+alter table public.student_answers add column if not exists is_marked boolean not null default false;
 
 create table if not exists public.proctoring_events (
     id uuid primary key default gen_random_uuid(),

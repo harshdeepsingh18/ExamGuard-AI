@@ -5,6 +5,7 @@
     const attemptId = app.dataset.attemptId;
     const timer = document.getElementById('exam-timer');
     const status = document.getElementById('save-status');
+    const reviewButton = document.getElementById('mark-review');
     const panels = [...document.querySelectorAll('.exam-question')];
     const navButtons = [...document.querySelectorAll('.question-nav button')];
     let current = 0;
@@ -31,13 +32,14 @@
             const response = await fetch(`/api/attempt/${attemptId}/answer`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-                body: JSON.stringify({ question_id: panel.dataset.questionId, answer })
+                body: JSON.stringify({ question_id: panel.dataset.questionId, answer, marked_for_review: panel.dataset.marked === 'true' })
             });
             if (!response.ok) throw new Error('save failed');
             status.textContent = 'Saved';
             const index = panels.indexOf(panel);
             const hasAnswer = Array.isArray(answer) ? answer.length > 0 : answer !== '';
             navButtons[index]?.classList.toggle('answered', hasAnswer);
+            navButtons[index]?.classList.toggle('marked', panel.dataset.marked === 'true');
             return true;
         } catch {
             status.textContent = 'Save failed — check your connection';
@@ -50,6 +52,7 @@
         current = Math.max(0, Math.min(index, panels.length - 1));
         panels.forEach((panel, i) => panel.classList.toggle('active', i === current));
         navButtons.forEach((button, i) => button.classList.toggle('current', i === current));
+        if (reviewButton) reviewButton.textContent = panels[current].dataset.marked === 'true' ? 'Unmark Review' : 'Mark for Review';
         document.getElementById('previous-question').disabled = current === 0;
         document.getElementById('next-question').disabled = current === panels.length - 1;
     }
@@ -70,6 +73,12 @@
 
     document.getElementById('previous-question')?.addEventListener('click', () => show(current - 1));
     document.getElementById('next-question')?.addEventListener('click', () => show(current + 1));
+    document.getElementById('mark-review')?.addEventListener('click', async event => {
+        const panel = panels[current];
+        panel.dataset.marked = panel.dataset.marked === 'true' ? 'false' : 'true';
+        event.currentTarget.textContent = panel.dataset.marked === 'true' ? 'Unmark Review' : 'Mark for Review';
+        await save(panel);
+    });
     document.getElementById('clear-answer')?.addEventListener('click', async () => {
         const panel = panels[current];
         panel.querySelectorAll('input').forEach(input => { if (input.type === 'radio' || input.type === 'checkbox') input.checked = false; else input.value = ''; });
