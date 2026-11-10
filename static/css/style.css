@@ -157,6 +157,9 @@ tr:last-child td { border-bottom: 0; }
 .exam-controls { display: flex; justify-content: space-between; gap: 10px; margin-top: 18px; }
 .monitor-status { margin-top: 10px; color: var(--muted); font-size: .86rem; }
 .monitor-status strong { color: var(--success); }
+.camera-panel { margin: 18px 0; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.camera-panel video { display: block; width: 100%; margin: 10px 0; border-radius: 8px; background: #000; }
+.camera-panel video[hidden] { display: none; }
 
 @media (max-width: 850px) {
     .nav-links { display: none; }

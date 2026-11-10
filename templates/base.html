@@ -22,7 +22,7 @@
         {% if profile %}
             {% if profile.role == 'teacher' %}<a class="secondary-btn" href="{{ url_for('teacher_exams') }}">Manage Exams</a>
             {% else %}<a class="secondary-btn" href="{{ url_for('available_exams') }}">Available Exams</a>{% endif %}
-            <a class="nav-btn" href="{{ url_for('logout') }}">Logout</a>
+            <form method="post" action="{{ url_for('logout') }}"><button class="nav-btn" type="submit">Logout</button></form>
         {% else %}
             <a class="secondary-btn" href="{{ url_for('auth_login') }}">Login</a>
             <a class="nav-btn" href="{{ url_for('register') }}">Get Started</a>
