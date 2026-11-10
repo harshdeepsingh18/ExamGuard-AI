@@ -169,9 +169,9 @@ def register():
         password_confirm = request.form.get("confirm_password", "")
         role = request.form.get("role", "student")
 
-        if not full_name or not email or not password:
+        if not full_name or len(full_name) > 120 or not email or len(email) > 254 or not password or len(password) > 128:
             return render_template(
-                "register.html", error="Please fill all fields."
+                "register.html", error="Enter a name up to 120 characters, a valid email, and a password up to 128 characters."
             )
 
         if password != password_confirm:
@@ -452,7 +452,7 @@ def teacher_exams():
             total_marks = float(request.form.get("total_marks", "0"))
             passing_marks = float(request.form.get("passing_marks", "0"))
             rules = request.form.get("rules", "").strip()
-            if not title or not subject or not exam_date or not start_time:
+            if not title or len(title) > 160 or not subject or len(subject) > 120 or not exam_date or not start_time:
                 raise ValueError("Complete all required exam details.")
             date.fromisoformat(exam_date)
             datetime.strptime(start_time, "%H:%M")
@@ -557,7 +557,7 @@ def edit_exam(exam_id):
                 passing_marks = float(request.form.get("passing_marks", "0"))
                 date.fromisoformat(exam_date)
                 datetime.strptime(start_time, "%H:%M")
-                if not title or not subject or not 1 <= duration <= 600 or total_marks <= 0 or not 0 <= passing_marks <= total_marks:
+                if not title or len(title) > 160 or not subject or len(subject) > 120 or not 1 <= duration <= 600 or total_marks <= 0 or not 0 <= passing_marks <= total_marks:
                     raise ValueError("Check the exam details and mark values.")
                 client.table("exams").update({
                     "title": title, "subject": subject, "exam_date": exam_date,
@@ -578,9 +578,11 @@ def edit_exam(exam_id):
                 options_text = request.form.get("options", "")
                 correct = request.form.get("correct_answer", "").strip()
                 allowed = {"multiple_choice", "multiple_select", "true_false", "short_answer", "long_answer"}
-                if not prompt or kind not in allowed or marks <= 0:
+                if not prompt or len(prompt) > 2000 or kind not in allowed or marks <= 0:
                     raise ValueError("Enter a question, type, and positive mark value.")
                 options = [line.strip() for line in options_text.splitlines() if line.strip()]
+                if len(options) > 12 or any(len(option) > 250 for option in options):
+                    raise ValueError("Questions may have up to 12 options, each no longer than 250 characters.")
                 if kind in ("multiple_choice", "multiple_select") and len(options) < 2:
                     raise ValueError("Add at least two answer options.")
                 if kind in ("multiple_choice", "multiple_select", "true_false") and not correct:
@@ -715,9 +717,20 @@ def save_answer(attempt_id):
         return jsonify(error="A question and answer are required."), 400
     try:
         client = get_user_client()
-        attempt = client.table("exam_attempts").select("id,status").eq("id", attempt_id).eq("student_id", profile["id"]).single().execute().data
+        attempt = client.table("exam_attempts").select("id,status,exam_id").eq("id", attempt_id).eq("student_id", profile["id"]).single().execute().data
         if attempt["status"] != "in_progress":
             return jsonify(error="This exam has already been submitted."), 409
+        question = client.table("questions").select("question_type,options").eq("id", question_id).eq("exam_id", attempt["exam_id"]).single().execute().data
+        kind = question["question_type"]
+        options = question.get("options") or []
+        if kind in ("multiple_choice", "true_false") and (not isinstance(answer, str) or answer not in options):
+            return jsonify(error="Choose one of the listed answer options."), 400
+        if kind == "multiple_select" and (not isinstance(answer, list) or len(answer) > len(options) or any(not isinstance(item, str) or item not in options for item in answer) or len(set(answer)) != len(answer)):
+            return jsonify(error="Choose only from the listed answer options."), 400
+        if kind == "short_answer" and (not isinstance(answer, str) or len(answer) > 1000):
+            return jsonify(error="Short answers must be 1,000 characters or fewer."), 400
+        if kind == "long_answer" and (not isinstance(answer, str) or len(answer) > 10000):
+            return jsonify(error="Long answers must be 10,000 characters or fewer."), 400
         client.table("student_answers").upsert({"attempt_id": attempt_id, "question_id": question_id, "answer": answer, "is_marked": marked}, on_conflict="attempt_id,question_id").execute()
         return jsonify(saved=True)
     except Exception as error:
