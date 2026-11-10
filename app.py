@@ -1,4 +1,6 @@
 
+import base64
+import binascii
 import os
 import uuid
 from datetime import date, datetime, timedelta
@@ -201,20 +203,36 @@ def reset_password():
         if len(password) < 8 or password != confirmation:
             return render_template("reset_password.html", error="Use matching passwords with at least 8 characters.")
         try:
-            access_token = request.form.get("access_token") or request.args.get("access_token")
-            refresh_token = request.form.get("refresh_token") or request.args.get("refresh_token")
+            access_token = request.form.get("access_token") or session.get("reset_access_token")
+            refresh_token = request.form.get("refresh_token") or session.get("reset_refresh_token")
             if access_token and refresh_token:
                 client = get_supabase()
                 client.auth.set_session(access_token, refresh_token)
                 client.auth.update_user({"password": password})
-            else:
-                client = get_supabase()
+            elif session.get("access_token") and session.get("refresh_token"):
+                client = get_user_client()
                 client.auth.update_user({"password": password})
+            else:
+                raise ValueError("A valid password recovery session is required.")
+            session.pop("reset_access_token", None)
+            session.pop("reset_refresh_token", None)
             return render_template("auth_login.html", message="Password updated. You can now log in.")
         except Exception as error:
             print("Password update error:", error)
             return render_template("reset_password.html", error="The reset link is invalid or expired. Request a new link.")
-    return render_template("reset_password.html")
+    token_hash = request.args.get("token_hash")
+    if token_hash:
+        try:
+            recovery = get_supabase().auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+            if not recovery.session:
+                raise ValueError("Recovery link did not create a session.")
+            session["reset_access_token"] = recovery.session.access_token
+            session["reset_refresh_token"] = recovery.session.refresh_token
+            return redirect(url_for("reset_password"))
+        except Exception as error:
+            print("Password recovery verification error:", error)
+            return render_template("reset_password.html", error="The recovery link is invalid or expired. Request a new link.")
+    return render_template("reset_password.html", access_token=session.get("reset_access_token", ""), refresh_token=session.get("reset_refresh_token", ""))
 
 
 # Actual login
@@ -573,11 +591,57 @@ def log_proctor_event(attempt_id):
         attempt = client.table("exam_attempts").select("id,status").eq("id", attempt_id).eq("student_id", profile["id"]).single().execute().data
         if attempt["status"] != "in_progress":
             return jsonify(error="This exam has already been submitted."), 409
+        event_times = session.get("proctor_event_times", {})
+        last_at = event_times.get(event_type, 0)
+        now = datetime.now().timestamp()
+        if now - last_at < 2:
+            return jsonify(recorded=True, throttled=True)
         client.table("proctoring_events").insert({"attempt_id": attempt_id, "event_type": event_type, "details": {}}).execute()
+        event_times[event_type] = now
+        session["proctor_event_times"] = event_times
         return jsonify(recorded=True)
     except Exception as error:
         print("Monitoring log error:", error)
         return jsonify(error="Monitoring event could not be saved."), 400
+
+
+@app.route("/api/attempt/<attempt_id>/face-check", methods=["POST"])
+def detect_exam_faces(attempt_id):
+    profile, response = require_profile("student")
+    if response:
+        return jsonify(error="Please log in as a student."), 401
+    payload = request.get_json(silent=True) or {}
+    frame_data = payload.get("frame", "")
+    if not isinstance(frame_data, str) or len(frame_data) > 700_000:
+        return jsonify(error="Camera frame is too large."), 413
+    if "," in frame_data:
+        frame_data = frame_data.split(",", 1)[1]
+    try:
+        raw_frame = base64.b64decode(frame_data, validate=True)
+        if not raw_frame or len(raw_frame) > 512_000:
+            return jsonify(error="Camera frame is too large."), 413
+        client = get_user_client()
+        attempt = client.table("exam_attempts").select("id,status").eq("id", attempt_id).eq("student_id", profile["id"]).single().execute().data
+        if attempt["status"] != "in_progress":
+            return jsonify(error="This exam has already been submitted."), 409
+        import cv2
+        import mediapipe as mp
+        import numpy as np
+        frame = cv2.imdecode(np.frombuffer(raw_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            return jsonify(error="Camera frame could not be read."), 400
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        with mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.55) as detector:
+            detection = detector.process(rgb_frame)
+        faces = len(detection.detections or [])
+        return jsonify(face_count=faces)
+    except (binascii.Error, ValueError):
+        return jsonify(error="Camera frame could not be decoded."), 400
+    except ImportError:
+        return jsonify(error="Face detection dependencies are unavailable on this server."), 503
+    except Exception as error:
+        print("Face detection error:", error)
+        return jsonify(error="Face detection is temporarily unavailable."), 503
 
 
 @app.route("/exam/<exam_id>/submit", methods=["POST"])
@@ -670,7 +734,7 @@ def publish_result(result_id):
 
 
 # Logout
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout():
 
     try:
