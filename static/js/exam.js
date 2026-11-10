@@ -16,7 +16,7 @@
         const type = panel.dataset.type;
         const inputs = [...panel.querySelectorAll('input, textarea')];
         if (type === 'multiple_choice' || type === 'true_false') {
-            return panel.querySelector('input[type="radio"]:checked')?.value ?? null;
+            return panel.querySelector('input[type="radio"]:checked')?.value ?? '';
         }
         if (type === 'multiple_select') {
             return [...panel.querySelectorAll('input[type="checkbox"]:checked')].map(item => item.value).sort();
@@ -26,7 +26,6 @@
 
     async function save(panel) {
         const answer = valueFor(panel);
-        if (answer === null || answer === '') return;
         status.textContent = 'Saving…';
         try {
             const response = await fetch(`/api/attempt/${attemptId}/answer`, {
@@ -37,9 +36,12 @@
             if (!response.ok) throw new Error('save failed');
             status.textContent = 'Saved';
             const index = panels.indexOf(panel);
-            navButtons[index]?.classList.add('answered');
+            const hasAnswer = Array.isArray(answer) ? answer.length > 0 : answer !== '';
+            navButtons[index]?.classList.toggle('answered', hasAnswer);
+            return true;
         } catch {
             status.textContent = 'Save failed — check your connection';
+            return false;
         }
     }
 
@@ -68,12 +70,20 @@
 
     document.getElementById('previous-question')?.addEventListener('click', () => show(current - 1));
     document.getElementById('next-question')?.addEventListener('click', () => show(current + 1));
+    document.getElementById('clear-answer')?.addEventListener('click', async () => {
+        const panel = panels[current];
+        panel.querySelectorAll('input').forEach(input => { if (input.type === 'radio' || input.type === 'checkbox') input.checked = false; else input.value = ''; });
+        panel.querySelectorAll('textarea').forEach(input => { input.value = ''; });
+        await save(panel);
+    });
 
     const submitForm = document.getElementById('submit-exam');
     async function submitAutomatically() {
         if (submitStarted) return;
         submitStarted = true;
-        for (const panel of panels) await save(panel);
+        for (const panel of panels) {
+            if (!await save(panel)) { submitStarted = false; return; }
+        }
         submitForm.requestSubmit();
     }
     submitForm?.addEventListener('submit', async event => {
@@ -81,7 +91,9 @@
             event.preventDefault();
             if (window.confirm('Submit your exam? You will not be able to change answers afterward.')) {
                 submitStarted = true;
-                for (const panel of panels) await save(panel);
+                for (const panel of panels) {
+                    if (!await save(panel)) { submitStarted = false; return; }
+                }
                 submitForm.submit();
             }
         }
