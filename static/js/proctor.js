@@ -1,6 +1,7 @@
 (() => {
     const app = document.getElementById('exam-app');
     const button = document.getElementById('enable-camera');
+    const stopButton = document.getElementById('stop-camera');
     const video = document.getElementById('camera-preview');
     const status = document.getElementById('camera-status');
     if (!app || !button || !video) return;
@@ -11,12 +12,29 @@
     let loop;
     let lastState = null;
 
+    function stopCamera() {
+        window.clearInterval(loop);
+        stream?.getTracks().forEach(track => track.stop());
+        stream = null;
+        video.srcObject = null;
+        video.hidden = true;
+        status.textContent = 'Camera off';
+        button.disabled = false;
+        stopButton.hidden = true;
+    }
+
     async function logEvent(eventType) {
         try {
-            await fetch(`/api/attempt/${attemptId}/event`, {
+            const response = await fetch(`/api/attempt/${attemptId}/event`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': token },
                 body: JSON.stringify({ event_type: eventType }), keepalive: true
             });
+            const result = await response.json();
+            const count = document.getElementById('warning-count');
+            if (response.ok && result.recorded && !result.throttled && count) {
+                count.dataset.count = String(Number(count.dataset.count || 0) + 1);
+                count.textContent = `Monitoring events: ${count.dataset.count}`;
+            }
         } catch { /* Monitoring logs do not interrupt the exam. */ }
     }
 
@@ -58,14 +76,16 @@
             video.hidden = false;
             await video.play();
             status.textContent = 'Camera active; frames are processed without video storage.';
+            stopButton.hidden = false;
             await inspectFrame();
             loop = window.setInterval(inspectFrame, 5000);
         } catch {
             status.textContent = 'Camera permission was denied or the camera is unavailable.';
-            await logEvent('camera_error');
             button.disabled = false;
         }
     });
+
+    stopButton.addEventListener('click', stopCamera);
 
     window.addEventListener('pagehide', () => {
         window.clearInterval(loop);

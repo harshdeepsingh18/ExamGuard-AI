@@ -10,6 +10,12 @@ create table if not exists public.profiles (
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
 );
+alter table public.profiles add column if not exists full_name text not null default '';
+alter table public.profiles add column if not exists role text not null default 'student';
+alter table public.profiles add column if not exists requested_role text not null default 'student';
+alter table public.profiles add column if not exists teacher_approved boolean not null default false;
+alter table public.profiles add column if not exists created_at timestamptz not null default now();
+alter table public.profiles add column if not exists updated_at timestamptz not null default now();
 
 create or replace function public.create_examguard_profile()
 returns trigger language plpgsql security definer set search_path = '' as $$
@@ -24,6 +30,15 @@ begin
     ) on conflict (id) do nothing;
     return new;
 end;
+$$;
+
+create or replace function public.is_approved_teacher(target_user uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+    select target_user = auth.uid() and exists(select 1 from public.profiles p where p.id = target_user and p.role = 'teacher' and p.teacher_approved)
+$$;
+create or replace function public.is_student_account(target_user uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+    select target_user = auth.uid() and exists(select 1 from public.profiles p where p.id = target_user and p.role = 'student')
 $$;
 
 drop trigger if exists examguard_auth_user_created on auth.users;
@@ -83,6 +98,9 @@ begin
     end if;
     if old.published then
         if not new.published and not exists(select 1 from public.exam_attempts a where a.exam_id = old.id) then
+            if (to_jsonb(new) - 'published' - 'updated_at') is distinct from (to_jsonb(old) - 'published' - 'updated_at') then
+                raise exception 'Only unpublishing is allowed after publication';
+            end if;
             new.updated_at = now();
             return new;
         end if;
@@ -95,7 +113,7 @@ begin
         if question_count = 0 or abs(question_total - total) > 0.0001 then
             raise exception 'Question marks must equal total marks before publishing';
         end if;
-        if not exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved) then
+        if not public.is_approved_teacher(auth.uid()) then
             raise exception 'Approved teacher access is required';
         end if;
     end if;
@@ -128,13 +146,13 @@ create table if not exists public.question_keys (
 alter table public.question_keys enable row level security;
 drop policy if exists question_key_teacher_read on public.question_keys;
 create policy question_key_teacher_read on public.question_keys for select to authenticated using (
-    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id join public.profiles p on p.id = e.teacher_id where q.id = question_id and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+    public.is_approved_teacher(auth.uid()) and exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id where q.id = question_id and e.teacher_id = auth.uid())
 );
 drop policy if exists question_key_teacher_write on public.question_keys;
 create policy question_key_teacher_write on public.question_keys for all to authenticated using (
-    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id join public.profiles p on p.id = e.teacher_id where q.id = question_id and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved and not e.published)
+    public.is_approved_teacher(auth.uid()) and exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id where q.id = question_id and e.teacher_id = auth.uid() and not e.published)
 ) with check (
-    exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id join public.profiles p on p.id = e.teacher_id where q.id = question_id and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved and not e.published)
+    public.is_approved_teacher(auth.uid()) and exists(select 1 from public.questions q join public.exams e on e.id = q.exam_id where q.id = question_id and e.teacher_id = auth.uid() and not e.published)
 );
 
 create table if not exists public.exam_attempts (
@@ -188,11 +206,12 @@ declare
     earned numeric(8,2);
     maximum numeric(8,2);
 begin
+    if new.id is distinct from old.id or new.exam_id is distinct from old.exam_id or
+       new.student_id is distinct from old.student_id or new.started_at is distinct from old.started_at or
+       new.submitted_at is distinct from old.submitted_at then
+        raise exception 'Attempt identity and timestamps cannot be changed directly';
+    end if;
     if old.status = 'in_progress' and new.status = 'submitted' then
-        if new.id is distinct from old.id or new.exam_id is distinct from old.exam_id or
-           new.student_id is distinct from old.student_id or new.started_at is distinct from old.started_at then
-            raise exception 'Attempt identity and start time cannot be changed';
-        end if;
         new.submitted_at = now();
         select coalesce(sum(case when q.question_type in ('multiple_choice', 'multiple_select', 'true_false')
                                   and a.answer = k.correct_answer then q.marks else 0 end), 0),
@@ -208,12 +227,14 @@ begin
         on conflict (attempt_id) do update set marks_obtained = excluded.marks_obtained, total_marks = excluded.total_marks;
     elsif new.status is distinct from old.status then
         raise exception 'Submitted attempts cannot be reopened or changed';
+    elsif old.status <> 'in_progress' then
+        raise exception 'Submitted attempts cannot be modified';
     end if;
     return new;
 end;
 $$;
 drop trigger if exists examguard_finalize_attempt on public.exam_attempts;
-create trigger examguard_finalize_attempt before update of status on public.exam_attempts
+create trigger examguard_finalize_attempt before update on public.exam_attempts
 for each row execute function public.finalize_exam_attempt();
 
 create or replace function public.publish_exam_result(target_result uuid)
@@ -224,8 +245,11 @@ declare
     new_marks numeric(8,2);
 begin
     select r.exam_id, r.attempt_id into target_exam, attempt_key from public.exam_results r where r.id = target_result;
-    if target_exam is null or not exists(select 1 from public.exams e where e.id = target_exam and e.teacher_id = auth.uid()) then
+    if target_exam is null or not exists(select 1 from public.exams e join public.profiles p on p.id = e.teacher_id where e.id = target_exam and e.teacher_id = auth.uid() and p.role = 'teacher' and p.teacher_approved) then
         raise exception 'Result not found or access denied';
+    end if;
+    if exists(select 1 from public.exam_results r where r.id = target_result and r.published) then
+        raise exception 'Result has already been published';
     end if;
     select coalesce(sum(case
         when q.question_type in ('multiple_choice', 'multiple_select', 'true_false') and a.answer = k.correct_answer then q.marks
@@ -269,7 +293,17 @@ create or replace function public.protect_student_answer()
 returns trigger language plpgsql security definer set search_path = '' as $$
 declare
     state text;
+    exam_for_attempt uuid;
+    exam_for_question uuid;
 begin
+    select exam_id into exam_for_attempt from public.exam_attempts where id = new.attempt_id;
+    select exam_id into exam_for_question from public.questions where id = new.question_id;
+    if exam_for_attempt is null or exam_for_question is distinct from exam_for_attempt then
+        raise exception 'Question does not belong to this exam attempt';
+    end if;
+    if tg_op = 'UPDATE' and (new.attempt_id is distinct from old.attempt_id or new.question_id is distinct from old.question_id) then
+        raise exception 'Answer identity cannot be changed';
+    end if;
     select status into state from public.exam_attempts where id = new.attempt_id;
     if (state <> 'in_progress' or not public.is_attempt_open(new.attempt_id)) and
        current_setting('examguard.grading', true) is distinct from 'true' then
@@ -316,7 +350,7 @@ create or replace function public.is_attempt_open(target_attempt uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
     select exists(
         select 1 from public.exam_attempts a join public.exams e on e.id = a.exam_id
-         where a.id = target_attempt and a.status = 'in_progress'
+         where a.id = target_attempt and a.student_id = auth.uid() and a.status = 'in_progress'
            and a.started_at + make_interval(mins => e.duration_minutes) > now()
     )
 $$;
@@ -336,24 +370,27 @@ drop policy if exists profile_update_self on public.profiles;
 create policy profile_update_self on public.profiles for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
 drop policy if exists profile_read_exam_students on public.profiles;
 create policy profile_read_exam_students on public.profiles for select to authenticated using (
+    public.is_approved_teacher(auth.uid()) and
     exists(select 1 from public.exam_attempts a join public.exams e on e.id = a.exam_id where a.student_id = profiles.id and e.teacher_id = auth.uid())
 );
 
 drop policy if exists exam_read_available on public.exams;
-create policy exam_read_available on public.exams for select to authenticated using (published or teacher_id = auth.uid());
+create policy exam_read_available on public.exams for select to authenticated using (
+    published or (teacher_id = auth.uid() and public.is_approved_teacher(auth.uid()))
+);
 drop policy if exists exam_teacher_insert on public.exams;
 create policy exam_teacher_insert on public.exams for insert to authenticated with check (
-    teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+    teacher_id = auth.uid() and public.is_approved_teacher(auth.uid())
 );
 drop policy if exists exam_teacher_update on public.exams;
 create policy exam_teacher_update on public.exams for update to authenticated using (
-    teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+    teacher_id = auth.uid() and public.is_approved_teacher(auth.uid())
 ) with check (
-    teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+    teacher_id = auth.uid() and public.is_approved_teacher(auth.uid())
 );
 drop policy if exists exam_teacher_delete on public.exams;
 create policy exam_teacher_delete on public.exams for delete to authenticated using (
-    teacher_id = auth.uid() and exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+    teacher_id = auth.uid() and public.is_approved_teacher(auth.uid())
 );
 
 drop policy if exists question_read_available on public.questions;
@@ -370,7 +407,10 @@ create policy question_teacher_write on public.questions for all to authenticate
 drop policy if exists attempts_read_owner_or_teacher on public.exam_attempts;
 create policy attempts_read_owner_or_teacher on public.exam_attempts for select to authenticated using (student_id = auth.uid() or exists(select 1 from public.exams e where e.id = exam_id and e.teacher_id = auth.uid()));
 drop policy if exists attempts_student_insert on public.exam_attempts;
-create policy attempts_student_insert on public.exam_attempts for insert to authenticated with check (student_id = auth.uid() and exists(select 1 from public.exams e where e.id = exam_id and e.published));
+create policy attempts_student_insert on public.exam_attempts for insert to authenticated with check (
+    student_id = auth.uid() and public.is_student_account(auth.uid())
+    and exists(select 1 from public.exams e where e.id = exam_id and e.published)
+);
 drop policy if exists attempts_student_update on public.exam_attempts;
 create policy attempts_student_update on public.exam_attempts for update to authenticated using (student_id = auth.uid()) with check (student_id = auth.uid());
 
@@ -387,7 +427,7 @@ create policy events_student_insert on public.proctoring_events for insert to au
 
 drop policy if exists results_read_owner_or_teacher on public.exam_results;
 create policy results_read_owner_or_teacher on public.exam_results for select to authenticated using (
-    (student_id = auth.uid() and published) or exists(select 1 from public.exams e where e.id = exam_id and e.teacher_id = auth.uid())
+    (student_id = auth.uid() and published) or (public.is_approved_teacher(auth.uid()) and exists(select 1 from public.exams e where e.id = exam_id and e.teacher_id = auth.uid()))
 );
 drop policy if exists notifications_read_own on public.notifications;
 create policy notifications_read_own on public.notifications for select to authenticated using (user_id = auth.uid());
@@ -400,9 +440,9 @@ on conflict (id) do nothing;
 drop policy if exists question_papers_teacher_upload on storage.objects;
 create policy question_papers_teacher_upload on storage.objects for insert to authenticated with check (
     bucket_id = 'question-papers' and (storage.foldername(name))[1] = auth.uid()::text and
-    exists(select 1 from public.profiles p where p.id = auth.uid() and p.role = 'teacher' and p.teacher_approved)
+    public.is_approved_teacher(auth.uid())
 );
 drop policy if exists question_papers_owner_read on storage.objects;
 create policy question_papers_owner_read on storage.objects for select to authenticated using (
-    bucket_id = 'question-papers' and (owner_id = auth.uid()::text or exists(select 1 from public.exams e where e.question_paper_path = name and e.teacher_id = auth.uid()))
+    bucket_id = 'question-papers' and (owner_id = auth.uid()::text or (public.is_approved_teacher(auth.uid()) and exists(select 1 from public.exams e where e.question_paper_path = name and e.teacher_id = auth.uid())))
 );

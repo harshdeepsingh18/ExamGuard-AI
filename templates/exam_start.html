@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Start {{ exam.title }} | ExamGuard AI{% endblock %}
+{% block content %}
+<main class="login-section">
+    <div class="badge">READY TO BEGIN</div>
+    <h1>{{ exam.title }}</h1>
+    <p>{{ exam.subject }} · {{ exam.duration_minutes }} minutes · {{ exam.total_marks }} marks</p>
+    {% if exam.rules %}<div class="panel" style="text-align:left"><strong>Exam rules</strong><p>{{ exam.rules }}</p></div>{% endif %}
+    <p class="form-note">Starting creates your one exam attempt and starts the timer. Your answers will autosave. Browser tab changes are logged. Camera checks are optional and require separate permission.</p>
+    <form method="post"><button class="primary-btn" type="submit">Start Exam</button></form>
+    <p><a class="text-link" href="{{ url_for('available_exams') }}">Return to available exams</a></p>
+</main>
+{% endblock %}

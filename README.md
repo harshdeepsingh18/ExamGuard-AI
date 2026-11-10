@@ -21,6 +21,7 @@ Flask and Supabase examination platform for teacher-managed assessments, timed s
    SUPABASE_KEY=your-anon-or-publishable-key
    SECRET_KEY=generate-a-long-random-value
    SESSION_COOKIE_SECURE=false
+   EXAM_TIMEZONE=Asia/Kolkata
    PASSWORD_RESET_REDIRECT_URL=http://127.0.0.1:5000/reset-password
    ```
 

@@ -112,16 +112,38 @@
 
     async function logEvent(eventType) {
         try {
-            await fetch(`/api/attempt/${attemptId}/event`, {
+            const response = await fetch(`/api/attempt/${attemptId}/event`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
                 body: JSON.stringify({ event_type: eventType }), keepalive: true
             });
+            const result = await response.json();
+            if (response.ok && result.recorded && !result.throttled) {
+                const count = document.getElementById('warning-count');
+                if (count) {
+                    count.dataset.count = String(Number(count.dataset.count || 0) + 1);
+                    count.textContent = `Monitoring events: ${count.dataset.count}`;
+                }
+            }
         } catch { /* Logging is best effort and never blocks an answer. */ }
     }
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) logEvent('tab_hidden');
     });
     document.addEventListener('fullscreenchange', () => {
-        if (!document.fullscreenElement) logEvent('fullscreen_exit');
+        const state = document.getElementById('fullscreen-status');
+        if (document.fullscreenElement) {
+            if (state) state.textContent = 'Fullscreen active';
+        } else {
+            if (state) state.textContent = 'Fullscreen is off';
+            logEvent('fullscreen_exit');
+        }
+    });
+    document.getElementById('enter-fullscreen')?.addEventListener('click', async () => {
+        try {
+            await document.documentElement.requestFullscreen();
+        } catch {
+            const state = document.getElementById('fullscreen-status');
+            if (state) state.textContent = 'Fullscreen is unavailable in this browser.';
+        }
     });
 })();

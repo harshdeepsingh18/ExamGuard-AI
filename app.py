@@ -58,6 +58,10 @@ def get_user_client():
 
     client = get_supabase()
     client.auth.set_session(access_token, refresh_token)
+    refreshed = client.auth.get_session()
+    if refreshed:
+        session["access_token"] = refreshed.access_token
+        session["refresh_token"] = refreshed.refresh_token
     return client
 
 
@@ -158,7 +162,10 @@ def register():
             })
 
             if response.session:
-                return redirect(url_for("auth_login"))
+                session["access_token"] = response.session.access_token
+                session["refresh_token"] = response.session.refresh_token
+                session["user_id"] = response.user.id
+                return redirect(url_for("dashboard"))
 
             return render_template(
                 "auth_login.html",
@@ -204,7 +211,7 @@ def reset_password():
             refresh_token = request.form.get("refresh_token") or session.get("reset_refresh_token")
             if access_token and refresh_token:
                 client = get_supabase()
-                client.auth.set_session(access_token, refresh_token)
+            client.auth.set_session(access_token, refresh_token)
                 client.auth.update_user({"password": password})
             elif session.get("access_token") and session.get("refresh_token"):
                 client = get_user_client()
@@ -317,13 +324,25 @@ def student():
             return redirect(url_for("dashboard"))
 
         client = get_user_client()
-        exams = client.table("exams").select("id", count="exact").eq("published", True).execute().count or 0
-        attempts = client.table("exam_attempts").select("id,status").eq("student_id", profile["id"]).execute().data or []
-        results = client.table("exam_results").select("marks_obtained,total_marks").eq("student_id", profile["id"]).eq("published", True).execute().data or []
+        exam_rows = client.table("exams").select("id,title,subject,exam_date,start_time,duration_minutes").eq("published", True).order("exam_date").execute().data or []
+        all_attempts = client.table("exam_attempts").select("id,status").eq("student_id", profile["id"]).execute().data or []
+        attempts = client.table("exam_attempts").select("id,status,submitted_at,exams(title,subject)").eq("student_id", profile["id"]).order("created_at", desc=True).limit(5).execute().data or []
+        results = client.table("exam_results").select("marks_obtained,total_marks,exams(title,subject)").eq("student_id", profile["id"]).eq("published", True).execute().data or []
+        notifications = client.table("notifications").select("title,body,created_at,read_at").eq("user_id", profile["id"]).order("created_at", desc=True).limit(5).execute().data or []
         average = round(sum(float(row["marks_obtained"]) / float(row["total_marks"]) * 100 for row in results if float(row["total_marks"]) > 0) / len(results)) if results else 0
+        today = datetime.now(ZoneInfo(os.getenv("EXAM_TIMEZONE", "Asia/Kolkata"))).date().isoformat()
+        upcoming = [exam for exam in exam_rows if exam["exam_date"] >= today][:5]
+        subject_scores = {}
+        for result in results:
+            subject = (result.get("exams") or {}).get("subject", "Other")
+            score = float(result["marks_obtained"]) / float(result["total_marks"]) * 100 if float(result["total_marks"]) else 0
+            subject_scores.setdefault(subject, []).append(score)
+        performance = [{"subject": subject, "score": round(sum(scores) / len(scores))} for subject, scores in subject_scores.items()]
         return render_template("student.html", profile=profile, pending_approval=False,
-                               total_exams=exams, completed_exams=sum(1 for a in attempts if a["status"] != "in_progress"),
-                               results_count=len(results), average_score=average)
+                               total_exams=len(exam_rows), completed_exams=sum(1 for a in all_attempts if a["status"] != "in_progress"),
+                               results_count=len(results), average_score=average, upcoming=upcoming,
+                               upcoming_count=len(upcoming), recent_attempts=attempts,
+                               notifications=notifications, performance=performance)
 
     except Exception as error:
         print("Student dashboard error:", error)
@@ -343,13 +362,21 @@ def teacher():
         if profile["role"] != "teacher" or not profile["teacher_approved"]:
             return redirect(url_for("dashboard"))
 
-        return render_template(
-            "teacher.html",
-            profile=profile,
-            exam_count=(get_user_client().table("exams").select("id", count="exact").eq("teacher_id", profile["id"]).execute().count or 0),
-            published_count=(get_user_client().table("exams").select("id", count="exact").eq("teacher_id", profile["id"]).eq("published", True).execute().count or 0),
-            submission_count=(get_user_client().table("exam_attempts").select("id", count="exact").execute().count or 0)
-        )
+        client = get_user_client()
+        exams = client.table("exams").select("id,published,exam_date,start_time,duration_minutes").eq("teacher_id", profile["id"]).execute().data or []
+        attempts = client.table("exam_attempts").select("student_id,status").execute().data or []
+        timezone = ZoneInfo(os.getenv("EXAM_TIMEZONE", "Asia/Kolkata"))
+        now = datetime.now(timezone)
+        active = 0
+        for item in exams:
+            if not item["published"]:
+                continue
+            starts = datetime.combine(date.fromisoformat(item["exam_date"]), datetime.strptime(str(item["start_time"])[:5], "%H:%M").time(), tzinfo=timezone)
+            if starts <= now <= starts + timedelta(minutes=int(item["duration_minutes"])):
+                active += 1
+        return render_template("teacher.html", profile=profile, exam_count=len(exams),
+                               active_count=active, student_count=len({a["student_id"] for a in attempts}),
+                               submission_count=sum(1 for a in attempts if a["status"] != "in_progress"))
 
     except Exception as error:
         print("Teacher dashboard error:", error)
@@ -423,7 +450,7 @@ def teacher_exams():
                 "duration_minutes": duration, "total_marks": total_marks,
                 "passing_marks": passing_marks, "rules": rules,
                 "question_paper_path": paper_path, "extracted_text": extracted_text,
-                "published": False
+                "timezone": os.getenv("EXAM_TIMEZONE", "Asia/Kolkata"), "published": False
             }).execute()
             flash("Exam saved as a draft. Review the extracted text and add questions before publishing.", "success")
             return redirect(url_for("edit_exam", exam_id=exam_id))
@@ -559,7 +586,7 @@ def available_exams():
     return render_template("available_exams.html", profile=profile, exams=exams, attempt_status=attempt_status)
 
 
-@app.route("/exam/<exam_id>")
+@app.route("/exam/<exam_id>", methods=["GET", "POST"])
 def take_exam(exam_id):
     profile, response = require_profile("student")
     if response:
@@ -568,7 +595,7 @@ def take_exam(exam_id):
     try:
         exam = client.table("exams").select("*").eq("id", exam_id).eq("published", True).single().execute().data
         existing = client.table("exam_attempts").select("*").eq("exam_id", exam_id).eq("student_id", profile["id"]).execute().data or []
-        exam_timezone = ZoneInfo(os.getenv("EXAM_TIMEZONE", "UTC"))
+        exam_timezone = ZoneInfo(os.getenv("EXAM_TIMEZONE", "Asia/Kolkata"))
         start_at = datetime.combine(date.fromisoformat(exam["exam_date"]), datetime.strptime(str(exam["start_time"])[:5], "%H:%M").time(), tzinfo=exam_timezone)
         now = datetime.now(exam_timezone)
         if now < start_at:
@@ -587,16 +614,33 @@ def take_exam(exam_id):
             flash("The scheduled exam time has ended.", "error")
             return redirect(url_for("available_exams"))
         if not existing:
-            attempt = client.table("exam_attempts").insert({"exam_id": exam_id, "student_id": profile["id"]}).select("*").single().execute().data
+            if request.method == "GET":
+                return render_template("exam_start.html", profile=profile, exam=exam)
+            try:
+                attempt_id = client.rpc("start_exam_attempt", {"target_exam": exam_id}).execute().data
+            except Exception:
+                # A second tab may have started the one allowed attempt first.
+                existing = client.table("exam_attempts").select("*").eq("exam_id", exam_id).eq("student_id", profile["id"]).execute().data or []
+                if not existing:
+                    raise
+                attempt_id = existing[0]["id"]
+            if isinstance(attempt_id, dict):
+                attempt_id = attempt_id.get("start_exam_attempt") or attempt_id.get("id")
+            if isinstance(attempt_id, list):
+                attempt_id = attempt_id[0]
+            attempt = client.table("exam_attempts").select("*").eq("id", attempt_id).single().execute().data
         else:
             attempt = existing[0]
+            if request.method == "POST":
+                return redirect(url_for("take_exam", exam_id=exam_id))
         questions = client.table("questions").select("id,position,question_type,prompt,options,marks").eq("exam_id", exam_id).order("position").execute().data or []
         answers = client.table("student_answers").select("question_id,answer").eq("attempt_id", attempt["id"]).execute().data or []
+        event_count = client.table("proctoring_events").select("id", count="exact").eq("attempt_id", attempt["id"]).execute().count or 0
     except Exception as error:
         print("Exam start error:", error)
         flash("This exam could not be opened.", "error")
         return redirect(url_for("available_exams"))
-    return render_template("exam.html", profile=profile, exam=exam, attempt=attempt, questions=questions, answers={a["question_id"]: a["answer"] for a in answers})
+    return render_template("exam.html", profile=profile, exam=exam, attempt=attempt, questions=questions, answers={a["question_id"]: a["answer"] for a in answers}, event_count=event_count)
 
 
 @app.route("/api/attempt/<attempt_id>/answer", methods=["POST"])
@@ -659,6 +703,12 @@ def detect_exam_faces(attempt_id):
     frame_data = payload.get("frame", "")
     if not isinstance(frame_data, str) or len(frame_data) > 700_000:
         return jsonify(error="Camera frame is too large."), 413
+    face_checks = session.get("face_check_times", {})
+    now = datetime.now().timestamp()
+    if now - face_checks.get(attempt_id, 0) < 3:
+        return jsonify(error="Please wait before the next camera check."), 429
+    face_checks[attempt_id] = now
+    session["face_check_times"] = face_checks
     if "," in frame_data:
         frame_data = frame_data.split(",", 1)[1]
     try:
@@ -797,4 +847,4 @@ def logout():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
