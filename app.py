@@ -255,6 +255,35 @@ def auth_callback():
             print("Email confirmation callback error:", error)
             return jsonify(error="Email confirmation failed. Request a fresh confirmation email."), 400
 
+    oauth_code = request.args.get("code")
+    if request.method == "GET" and oauth_code:
+        code_verifier = session.pop("oauth_code_verifier", None)
+        if not code_verifier:
+            return render_template(
+                "auth_callback.html",
+                error="Google sign-in expired. Please start again."
+            ), 400
+        try:
+            client = get_supabase()
+            response = client.auth.exchange_code_for_session({
+                "auth_code": oauth_code,
+                "code_verifier": code_verifier
+            })
+            if not response.session or not response.user:
+                raise ValueError("Google sign-in did not return a session.")
+            session.clear()
+            session["access_token"] = response.session.access_token
+            session["refresh_token"] = response.session.refresh_token
+            session["user_id"] = response.user.id
+            session["email"] = response.user.email
+            return redirect(url_for("dashboard"))
+        except Exception as error:
+            print("Google sign-in callback error:", error)
+            return render_template(
+                "auth_callback.html",
+                error="Google sign-in could not be completed. Please try again."
+            ), 400
+
     token_hash = request.args.get("token_hash")
     if token_hash:
         try:
@@ -280,6 +309,31 @@ def auth_callback():
     if request.args.get("error"):
         return render_template("auth_callback.html", error="Email confirmation failed. Request a new confirmation email."), 400
     return render_template("auth_callback.html")
+
+
+@app.route("/auth/google")
+def google_sign_in():
+    try:
+        client = get_supabase()
+        response = client.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                "redirect_to": os.getenv(
+                    "AUTH_CONFIRM_REDIRECT_URL",
+                    url_for("auth_callback", _external=True)
+                )
+            }
+        })
+        verifier_key = f"{client.auth._storage_key}-code-verifier"
+        verifier = client.auth._storage.get_item(verifier_key)
+        if not verifier:
+            raise RuntimeError("Supabase did not create an OAuth PKCE verifier.")
+        session["oauth_code_verifier"] = verifier.partition("/")[0]
+        return redirect(response.url)
+    except Exception as error:
+        print("Google sign-in start error:", error)
+        flash("Google sign-in is unavailable. Check the Google provider settings in Supabase.", "error")
+        return redirect(url_for("auth_login"))
 
 
 @app.route("/forgot-password", methods=["GET", "POST"])
