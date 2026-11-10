@@ -42,7 +42,7 @@
     </div>{% endif %}
 {% endwith %}
 {% block content %}{% endblock %}
-<footer class="footer">© 2026 ExamGuard AI · Smarter Exams. Fairer Results.</footer>
+<footer class="footer">© 2026 ExamGuard AI · Smarter Exams. Fairer Results. · <a class="text-link" href="{{ url_for('privacy') }}">Privacy</a> · <a class="text-link" href="{{ url_for('terms') }}">Terms</a> · <a class="text-link" href="{{ url_for('home') }}#about">Contact your administrator</a></footer>
 <script>
     (() => {
         const token = document.querySelector('meta[name="csrf-token"]')?.content;

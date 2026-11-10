@@ -1,6 +1,7 @@
 
 import base64
 import binascii
+import json
 import os
 import uuid
 from datetime import date, datetime, timedelta
@@ -42,6 +43,16 @@ app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 if not app.secret_key or not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Check your .env configuration")
+if SUPABASE_KEY.startswith("sb_secret_"):
+    raise RuntimeError("Use a Supabase publishable/anon key in SUPABASE_KEY; service-role keys bypass row-level security.")
+try:
+    key_payload = SUPABASE_KEY.split(".")[1]
+    key_payload += "=" * (-len(key_payload) % 4)
+    decoded_payload = json.loads(base64.urlsafe_b64decode(key_payload))
+    if isinstance(decoded_payload, dict) and decoded_payload.get("role") == "service_role":
+        raise RuntimeError("Use a Supabase publishable/anon key in SUPABASE_KEY; service-role keys bypass row-level security.")
+except (IndexError, ValueError, json.JSONDecodeError, binascii.Error):
+    pass
 
 # Create a Supabase client
 def get_supabase():
@@ -105,6 +116,16 @@ def require_profile(*roles):
 @app.route("/")
 def home():
     return render_template("index.html")
+
+
+@app.route("/privacy")
+def privacy():
+    return render_template("privacy.html")
+
+
+@app.route("/terms")
+def terms():
+    return render_template("terms.html")
 
 
 # Role selection
@@ -483,6 +504,10 @@ def edit_exam(exam_id):
         questions = client.table("questions").select("*").eq("exam_id", exam_id).order("position").execute().data or []
         if request.method == "POST":
             if exam.get("published") and request.form.get("action") == "unpublish":
+                attempt_count = client.table("exam_attempts").select("id", count="exact").eq("exam_id", exam_id).execute().count or 0
+                if attempt_count:
+                    flash("This exam has student attempts and cannot be unpublished.", "error")
+                    return redirect(url_for("edit_exam", exam_id=exam_id))
                 client.table("exams").update({"published": False}).eq("id", exam_id).execute()
                 flash("Exam unpublished.", "success")
                 return redirect(url_for("edit_exam", exam_id=exam_id))
@@ -567,7 +592,8 @@ def edit_exam(exam_id):
         print("Exam editor error:", error)
         flash("Could not load or update this exam.", "error")
         return redirect(url_for("teacher_exams"))
-    return render_template("edit_exam.html", profile=profile, exam=exam, questions=questions)
+    attempt_count = client.table("exam_attempts").select("id", count="exact").eq("exam_id", exam_id).execute().count or 0 if exam.get("published") else 0
+    return render_template("edit_exam.html", profile=profile, exam=exam, questions=questions, attempt_count=attempt_count)
 
 
 @app.route("/exams")

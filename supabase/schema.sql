@@ -114,6 +114,9 @@ declare
     question_total numeric(8,2);
     question_count integer;
 begin
+    if not exists(select 1 from pg_catalog.pg_timezone_names where name = new.timezone) then
+        raise exception 'A valid exam time zone is required';
+    end if;
     if tg_op = 'INSERT' then
         if new.published then raise exception 'Exams must be reviewed before publishing'; end if;
         return new;
@@ -230,6 +233,7 @@ declare
 begin
     if new.id is distinct from old.id or new.exam_id is distinct from old.exam_id or
        new.student_id is distinct from old.student_id or new.started_at is distinct from old.started_at or
+       new.created_at is distinct from old.created_at or
        new.submitted_at is distinct from old.submitted_at then
         raise exception 'Attempt identity and timestamps cannot be changed directly';
     end if;
@@ -417,7 +421,7 @@ create policy exam_teacher_delete on public.exams for delete to authenticated us
 
 drop policy if exists question_read_available on public.questions;
 create policy question_read_available on public.questions for select to authenticated using (
-    exists(select 1 from public.exams e where e.id = exam_id and (e.published or e.teacher_id = auth.uid()))
+    exists(select 1 from public.exams e where e.id = exam_id and (e.published or (e.teacher_id = auth.uid() and public.is_approved_teacher(auth.uid()))))
 );
 drop policy if exists question_teacher_write on public.questions;
 create policy question_teacher_write on public.questions for all to authenticated using (
@@ -427,12 +431,9 @@ create policy question_teacher_write on public.questions for all to authenticate
 );
 
 drop policy if exists attempts_read_owner_or_teacher on public.exam_attempts;
-create policy attempts_read_owner_or_teacher on public.exam_attempts for select to authenticated using (student_id = auth.uid() or exists(select 1 from public.exams e where e.id = exam_id and e.teacher_id = auth.uid()));
+create policy attempts_read_owner_or_teacher on public.exam_attempts for select to authenticated using (student_id = auth.uid() or (public.is_approved_teacher(auth.uid()) and exists(select 1 from public.exams e where e.id = exam_id and e.teacher_id = auth.uid())));
 drop policy if exists attempts_student_insert on public.exam_attempts;
-create policy attempts_student_insert on public.exam_attempts for insert to authenticated with check (
-    student_id = auth.uid() and public.is_student_account(auth.uid())
-    and exists(select 1 from public.exams e where e.id = exam_id and e.published)
-);
+-- Attempts are created through start_exam_attempt, which enforces the schedule.
 drop policy if exists attempts_student_update on public.exam_attempts;
 create policy attempts_student_update on public.exam_attempts for update to authenticated using (student_id = auth.uid()) with check (student_id = auth.uid());
 
