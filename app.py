@@ -190,6 +190,10 @@ def register():
 
         try:
             client = get_supabase()
+            confirmation_redirect = os.getenv(
+                "AUTH_CONFIRM_REDIRECT_URL",
+                url_for("auth_callback", _external=True)
+            )
 
             response = client.auth.sign_up({
                 "email": email,
@@ -198,7 +202,8 @@ def register():
                     "data": {
                         "full_name": full_name,
                         "requested_role": role
-                    }
+                    },
+                    "email_redirect_to": confirmation_redirect
                 }
             })
 
@@ -211,7 +216,7 @@ def register():
 
             return render_template(
                 "auth_login.html",
-                message="Registration successful! Check your email to confirm your account, then login."
+                message="Registration successful. Open the confirmation email, then return here to log in."
             )
 
         except Exception as error:
@@ -223,6 +228,58 @@ def register():
             )
 
     return render_template("register.html")
+
+
+@app.route("/auth/callback", methods=["GET", "POST"])
+def auth_callback():
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        access_token = payload.get("access_token")
+        refresh_token = payload.get("refresh_token")
+        if not isinstance(access_token, str) or not isinstance(refresh_token, str):
+            return jsonify(error="The confirmation link did not contain a valid session."), 400
+        try:
+            client = get_supabase()
+            client.auth.set_session(access_token, refresh_token)
+            auth_session = client.auth.get_session()
+            user = client.auth.get_user()
+            if not auth_session or not user or not user.user:
+                raise ValueError("Confirmation session could not be verified.")
+            session.clear()
+            session["access_token"] = auth_session.access_token
+            session["refresh_token"] = auth_session.refresh_token
+            session["user_id"] = user.user.id
+            session["email"] = user.user.email
+            return jsonify(redirect=url_for("dashboard"))
+        except Exception as error:
+            print("Email confirmation callback error:", error)
+            return jsonify(error="Email confirmation failed. Request a fresh confirmation email."), 400
+
+    token_hash = request.args.get("token_hash")
+    if token_hash:
+        try:
+            confirmation_type = request.args.get("type", "email")
+            if confirmation_type not in {"signup", "email", "magiclink", "invite"}:
+                raise ValueError("Unsupported confirmation type.")
+            confirmation = get_supabase().auth.verify_otp({
+                "token_hash": token_hash,
+                "type": confirmation_type
+            })
+            if not confirmation.session or not confirmation.user:
+                raise ValueError("Confirmation did not create a session.")
+            session.clear()
+            session["access_token"] = confirmation.session.access_token
+            session["refresh_token"] = confirmation.session.refresh_token
+            session["user_id"] = confirmation.user.id
+            session["email"] = confirmation.user.email
+            return redirect(url_for("dashboard"))
+        except Exception as error:
+            print("Email confirmation token error:", error)
+            return render_template("auth_callback.html", error="This confirmation link is invalid or expired. Request a new email."), 400
+
+    if request.args.get("error"):
+        return render_template("auth_callback.html", error="Email confirmation failed. Request a new confirmation email."), 400
+    return render_template("auth_callback.html")
 
 
 @app.route("/forgot-password", methods=["GET", "POST"])

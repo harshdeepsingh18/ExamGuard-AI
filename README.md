@@ -22,10 +22,11 @@ Flask and Supabase examination platform for teacher-managed assessments, timed s
    SECRET_KEY=generate-a-long-random-value
    SESSION_COOKIE_SECURE=false
    EXAM_TIMEZONE=Asia/Kolkata
+   AUTH_CONFIRM_REDIRECT_URL=http://127.0.0.1:5000/auth/callback
    PASSWORD_RESET_REDIRECT_URL=http://127.0.0.1:5000/reset-password
    ```
 
-   Use the Supabase anon/publishable key only. Never put a service-role key in the app or browser. Add the password reset URL to Supabase Auth's allowed redirect URLs. For an HTTPS deployment, set `SESSION_COOKIE_SECURE=true` and use an HTTPS reset URL.
+   Use the Supabase anon/publishable key only. Never put a service-role key in the app or browser. Add both redirect URLs to Supabase Auth's allowed redirect URLs. For local development, open the app using the same host in the URL (here, `127.0.0.1`) and use the corresponding callback URL in Supabase. For an HTTPS deployment, set `SESSION_COOKIE_SECURE=true` and use HTTPS redirect URLs.
 
 4. Configure Supabase Auth email confirmation and SMTP for the deployment, then run:
 
