@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Continue to ExamGuard AI{% endblock %}
+{% block content %}
+<main class="login-section">
+    <div class="badge">SECURE PORTAL ACCESS</div>
+    <h1>Welcome to <span>ExamGuard AI</span></h1>
+    <p>Log in to your account or create a new one to continue.</p>
+    <div class="hero-buttons"><a href="{{ url_for('auth_login') }}" class="primary-btn">Login →</a><a href="{{ url_for('register') }}" class="secondary-btn">Create Account →</a></div>
+</main>
+{% endblock %}
