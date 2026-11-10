@@ -1,0 +1,12 @@
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { supabase } from '../lib/supabase'
+import { BookOpen, LayoutDashboard, Settings as SettingsIcon, ShieldCheck, GraduationCap, LogOut, Sun, Moon } from 'lucide-react'
+import { useAuth } from '../context/AuthContext'
+import React, { useState } from 'react'
+const items=[['/',LayoutDashboard,'Overview'],['/exams',BookOpen,'Exams'],['/teacher',GraduationCap,'Teaching'],['/admin',ShieldCheck,'Administration'],['/settings',SettingsIcon,'Settings']]
+export function AppLayout(){const {profile,user}=useAuth(),navigate=useNavigate(),[dark,setDark]=useState(false);const links=items.filter(([path])=>path==='/'||path==='/exams'||path==='/settings'||(path==='/teacher'&&['teacher','admin'].includes(profile?.role))||(path==='/admin'&&profile?.role==='admin'));return <div className={`app-shell ${dark?'theme-dark':''}`}><aside className="sidebar"><a className="brand" href="/"><span className="brand-mark"><ShieldCheck size={19}/></span>ExamGuard AI</a><div className="nav-label">WORKSPACE</div><nav>{links.map(([path,NavIcon,label])=><NavLink end={path==='/'} key={path} className={({isActive})=>`nav-link ${isActive?'active':''}`} to={path}>{React.createElement(NavIcon,{size:17})}<span className="nav-text">{label}</span></NavLink>)}</nav><div className="sidebar-bottom" style={{marginTop:'auto',padding:'12px 8px'}}><div className="row small"><div className="avatar" style={{width:36,height:36,display:'grid',placeItems:'center'}}>{profile?.full_name?.[0]?.toUpperCase()||'U'}</div><div><b>{profile?.full_name||'Learner'}</b><div className="muted" style={{marginTop:3}}>{profile?.role||'student'}</div></div></div><button className="btn ghost" style={{marginTop:14,width:'100%'}} onClick={async()=>{await supabase.auth.signOut();navigate('/login')}}><LogOut size={15}/><span>Sign out</span></button></div></aside><main className="main"><div className="topbar"><div><h1 className="page-title">{profile?.role==='admin'?'Admin workspace':profile?.role==='teacher'?'Teaching space':'Your learning space'}</h1><p className="eyebrow">A clear view of your exam progress.</p></div><div className="row"><button aria-label="Toggle theme" className="btn ghost" onClick={()=>setDark(!dark)}>{dark?<Sun size={17}/>:<Moon size={17}/>}</button><button className="avatar" aria-label="Open profile settings" onClick={()=>navigate('/settings')}>{profile?.full_name?.[0]?.toUpperCase()||user?.email?.[0]?.toUpperCase()}</button></div></div><Outlet/></main></div>}
+
+
+
+
+

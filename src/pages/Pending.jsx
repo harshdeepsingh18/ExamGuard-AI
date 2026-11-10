@@ -1,0 +1,3 @@
+import { Link } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
+export function Pending(){const {profile}=useAuth();return <main className="auth-bg"><div className="auth-card card"><div className="brand"><span className="brand-mark">EG</span>ExamGuard AI</div><span className="badge pending" style={{marginTop:20}}>REQUEST UNDER REVIEW</span><h1>Thanks for applying, {profile?.full_name?.split(' ')[0]||'teacher'}.</h1><p className="muted">Teacher tools are available once an administrator approves your request. You can still use your student workspace in the meantime.</p><Link className="btn" to="/">Go to my dashboard</Link></div></main>}
