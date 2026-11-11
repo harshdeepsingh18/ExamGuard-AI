@@ -44,10 +44,13 @@ export function ExamRoom() {
   const [tabSwitches, setTabSwitches] = useState(0)
   const [savedTabSwitches, setSavedTabSwitches] = useState(0)
   const [cameraPermissionStatus, setCameraPermissionStatus] = useState('Not requested')
-  const [cameraStreamStatus, setCameraStreamStatus] = useState('Not active')
+  const [cameraStreamStatus, setCameraStreamStatus] = useState('Camera permission required')
   const [faceDetectionStatus, setFaceDetectionStatus] = useState('Not started')
   const [cameraStream, setCameraStream] = useState(null)
   const videoRef = useRef(null)
+  const cameraStreamRef = useRef(null)
+  const cameraRequestRef = useRef(false)
+  const [videoElement, setVideoElement] = useState(null)
   const lastEventRef = useRef({})
   const eventQueueRef = useRef([])
   const flushingEventsRef = useRef(null)
@@ -127,88 +130,214 @@ export function ExamRoom() {
     return () => { active = false }
   }, [id, activateExam])
 
-  const waitForVideoPlayback = useCallback(async stream => {
-    const video = videoRef.current
+  const setVideoRef = useCallback(element => {
+    videoRef.current = element
+    if (element) setVideoElement(current => current === element ? current : element)
+  }, [])
+
+  const waitForVideoPlayback = useCallback(async (stream, video = videoRef.current) => {
     if (!video) throw new Error('The local camera preview is unavailable.')
-    if (!stream.getVideoTracks().some(track => track.readyState === 'live')) {
+    const track = stream.getVideoTracks()[0]
+    if (!track || track.readyState !== 'live' || !stream.active) {
       throw new Error('The camera stream is not active.')
     }
 
-    video.srcObject = stream
-    let cleanup = () => {}
-    const playing = new Promise((resolve, reject) => {
+    if (video.srcObject !== stream) video.srcObject = stream
+
+    const waitForCondition = (condition, events, timeoutMessage) => new Promise((resolve, reject) => {
+      let timeout
+      const cleanup = () => {
+        clearTimeout(timeout)
+        events.forEach(eventName => video.removeEventListener(eventName, check))
+        video.removeEventListener('error', onError)
+        track.removeEventListener('ended', onTrackEnded)
+      }
       const finish = callback => value => {
         cleanup()
         callback(value)
       }
-      const onPlaying = finish(resolve)
-      const onError = finish(() => reject(new Error('The camera preview could not start.')))
-      const timeout = setTimeout(
-        () => onError(new Error('Timed out waiting for the camera preview.')),
-        10000,
-      )
-      cleanup = () => {
-        clearTimeout(timeout)
-        video.removeEventListener('playing', onPlaying)
-        video.removeEventListener('error', onError)
+      const onError = finish(() => reject(new Error(
+        video.error?.message || 'The camera preview could not start.',
+      )))
+      const onTrackEnded = finish(() => reject(new Error('The camera disconnected during startup.')))
+      const check = () => {
+        if (video.error) {
+          onError()
+          return
+        }
+        if (track.readyState !== 'live' || !stream.active) {
+          onTrackEnded()
+          return
+        }
+        if (condition()) finish(resolve)()
       }
-      video.addEventListener('playing', onPlaying, { once: true })
+      events.forEach(eventName => video.addEventListener(eventName, check))
       video.addEventListener('error', onError, { once: true })
+      track.addEventListener('ended', onTrackEnded, { once: true })
+      timeout = setTimeout(finish(() => reject(new Error(timeoutMessage))), 10000)
+      check()
     })
 
     try {
+      if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
+        await waitForCondition(
+          () => video.readyState >= HTMLMediaElement.HAVE_METADATA,
+          ['loadedmetadata'],
+          'Timed out waiting for camera video metadata.',
+        )
+      }
       await video.play()
-      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.paused) {
-        await playing
-      } else {
-        cleanup()
+      await waitForCondition(
+        () => !video.paused
+          && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+          && video.videoWidth > 0
+          && video.videoHeight > 0,
+        ['playing', 'loadeddata', 'canplay', 'timeupdate'],
+        'Timed out waiting for a decoded camera frame.',
+      )
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        await new Promise((resolve, reject) => {
+          let timeout
+          let callbackId
+          const cleanup = () => {
+            clearTimeout(timeout)
+            if (callbackId !== undefined && typeof video.cancelVideoFrameCallback === 'function') {
+              video.cancelVideoFrameCallback(callbackId)
+            }
+            track.removeEventListener('ended', onTrackEnded)
+          }
+          const onFrame = () => {
+            cleanup()
+            if (track.readyState === 'live' && stream.active && !video.paused) resolve()
+            else reject(new Error('The camera stopped before its first video frame.'))
+          }
+          const onTrackEnded = () => {
+            cleanup()
+            reject(new Error('The camera disconnected before its first video frame.'))
+          }
+          timeout = setTimeout(() => {
+            cleanup()
+            reject(new Error('Timed out waiting for the first camera frame.'))
+          }, 5000)
+          track.addEventListener('ended', onTrackEnded, { once: true })
+          callbackId = video.requestVideoFrameCallback(onFrame)
+        })
       }
     } catch (playError) {
-      cleanup()
+      if (playError.name === 'NotAllowedError') {
+        throw new Error('Browser playback was blocked. Allow camera playback and retry.')
+      }
       throw playError
     }
 
-    if (!stream.getVideoTracks().some(track => track.readyState === 'live')) {
-      throw new Error('The camera stopped before its preview became active.')
+    if (track.readyState !== 'live' || !stream.active || video.paused
+      || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+      || video.videoWidth === 0 || video.videoHeight === 0) {
+      throw new Error('The camera stopped before video playback was verified.')
     }
-    setCameraStreamStatus('Live')
   }, [])
 
-  const startRequiredCamera = async () => {
-    setError('')
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraPermissionStatus('Unsupported by this browser')
-      setCameraStreamStatus('Not active')
-      setError('This exam requires camera access, but this browser cannot provide it.')
-      return
+  const requestCamera = useCallback(async () => {
+    if (cameraRequestRef.current) return null
+    if (cameraStreamRef.current?.active
+      && cameraStreamRef.current.getVideoTracks().some(track => track.readyState === 'live')) {
+      cameraRequestRef.current = true
+      const existingStream = cameraStreamRef.current
+      setCameraStreamStatus('Verifying camera preview')
+      try {
+        await waitForVideoPlayback(existingStream)
+        setCameraStreamStatus('Camera active · video playing')
+        return existingStream
+      } catch (cameraError) {
+        setCameraStreamStatus('Camera playback failed')
+        setError(`Camera preview could not be verified. ${cameraError.message || 'Video playback failed.'}`)
+        throw cameraError
+      } finally {
+        cameraRequestRef.current = false
+      }
     }
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach(track => track.stop())
+      cameraStreamRef.current = null
+      setCameraStream(null)
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraStreamStatus('Camera initialization failed · unsupported browser')
+      throw new Error('This browser does not support camera access through MediaDevices.')
+    }
+
+    cameraRequestRef.current = true
+    setError('')
     setCameraPermissionStatus('Requesting permission')
-    setCameraStreamStatus('Waiting for camera')
+    setCameraStreamStatus('Requesting camera permission')
+    setFaceDetectionStatus('Not started')
     let stream
     let permissionGranted = false
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
       if (!componentActiveRef.current) {
         stream.getTracks().forEach(track => track.stop())
-        return
+        return null
       }
-      setCameraPermissionStatus('Granted')
+      cameraStreamRef.current = stream
       permissionGranted = true
+      setCameraPermissionStatus('Granted')
+      setCameraStreamStatus('Camera initializing')
       await waitForVideoPlayback(stream)
+      if (!componentActiveRef.current) {
+        stream.getTracks().forEach(track => track.stop())
+        return null
+      }
+      cameraStreamRef.current = stream
       setCameraStream(stream)
+      setCameraStreamStatus('Camera active · video playing')
+      return stream
+    } catch (cameraError) {
+      stream?.getTracks().forEach(track => track.stop())
+      cameraStreamRef.current = null
+      setCameraStream(null)
+      setFaceDetectionStatus('Not started')
+      if (cameraError.name === 'NotAllowedError' || cameraError.name === 'SecurityError') {
+        if (!permissionGranted) setCameraPermissionStatus('Denied')
+        setCameraStreamStatus('Camera permission denied')
+        setError(`Camera permission was denied. ${cameraError.message || ''}`.trim())
+      } else if (cameraError.name === 'NotFoundError' || cameraError.name === 'DevicesNotFoundError') {
+        setCameraPermissionStatus('Unavailable')
+        setCameraStreamStatus('No camera device available')
+        setError('No camera device is available. Connect a camera and retry.')
+      } else if (cameraError.message?.includes('disconnected') || cameraError.message?.includes('stopped')) {
+        setCameraStreamStatus('Camera disconnected')
+        setError(`The camera disconnected during startup. ${cameraError.message}`)
+      } else if (cameraError.message?.includes('playback') || cameraError.message?.includes('decoded')
+        || cameraError.message?.includes('video frame') || cameraError.message?.includes('metadata')) {
+        setCameraStreamStatus('Camera playback failed')
+        setError(`Camera playback could not be verified. ${cameraError.message}`)
+      } else {
+        setCameraStreamStatus('Camera initialization failed')
+        setError(`Camera could not be initialized. ${cameraError.message || 'Check browser and device permissions.'}`)
+      }
+      throw cameraError
+    } finally {
+      cameraRequestRef.current = false
+    }
+  }, [waitForVideoPlayback])
+
+  const startRequiredCamera = async () => {
+    try {
+      const stream = await requestCamera()
+      if (!stream) return
       const started = await activateExam(paper, () => componentActiveRef.current)
       if (!started) {
         stream.getTracks().forEach(track => track.stop())
+        cameraStreamRef.current = null
         if (componentActiveRef.current) {
           setCameraStream(null)
-          setCameraStreamStatus('Not active')
+          setCameraStreamStatus('Camera permission required')
         }
       }
-    } catch (cameraError) {
-      stream?.getTracks().forEach(track => track.stop())
-      if (!permissionGranted) setCameraPermissionStatus('Denied or unavailable')
-      setCameraStreamStatus('Not active')
-      setError(`Camera access is required to begin this exam. ${cameraError.message || ''}`.trim())
+    } catch {
+      if (componentActiveRef.current) setFaceDetectionStatus('Not started')
     }
   }
 
@@ -422,66 +551,69 @@ export function ExamRoom() {
   }, [cameraStream, timerActive, exam?.exam.camera_required, recordMonitoringEvent])
 
   const startCamera = async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraPermissionStatus('Unsupported by this browser')
-      setCameraStreamStatus('Not active')
-      setFaceDetectionStatus('Unavailable')
-      await recordMonitoringEvent('camera_unsupported')
-      return
-    }
-    setCameraPermissionStatus('Requesting permission')
-    setCameraStreamStatus('Waiting for camera')
-    let stream
-    let permissionGranted = false
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-      setCameraPermissionStatus('Granted')
-      permissionGranted = true
-      await waitForVideoPlayback(stream)
-      if (!componentActiveRef.current) {
-        stream.getTracks().forEach(track => track.stop())
-        return
-      }
-      setCameraStream(stream)
-      await recordMonitoringEvent('camera_started')
+      const stream = await requestCamera()
+      if (stream) await recordMonitoringEvent('camera_started')
     } catch (cameraError) {
-      stream?.getTracks().forEach(track => track.stop())
-      setCameraStreamStatus('Not active')
-      setFaceDetectionStatus('Unavailable')
-      if (!permissionGranted) {
-        setCameraPermissionStatus('Denied or unavailable')
+      if (cameraError.name === 'NotAllowedError' || cameraError.name === 'SecurityError') {
         await recordMonitoringEvent('camera_denied')
       }
-      setError(`Camera could not be started: ${cameraError.message || 'Permission denied or unavailable.'}`)
     }
   }
 
   const stopCamera = async () => {
     const savedEvent = recordMonitoringEvent('camera_stopped')
+    cameraStreamRef.current = null
     cameraStream?.getTracks().forEach(track => track.stop())
     setCameraStream(null)
-    setCameraStreamStatus('Not active')
+    setCameraStreamStatus('Camera stopped')
     setFaceDetectionStatus('Not started')
     await savedEvent
   }
 
   useEffect(() => {
-    if (!cameraStream) return
-    const video = videoRef.current
+    if (!cameraStream) return undefined
     let active = true
-    void waitForVideoPlayback(cameraStream).catch(playError => {
-      if (!active) return
-      setCameraStreamStatus('Preview unavailable')
-      setError(`Camera preview stopped: ${playError.message || 'Video playback failed.'}`)
-    })
+    const track = cameraStream.getVideoTracks()[0]
+    const onTrackEnded = () => {
+      if (cameraStreamRef.current === cameraStream) cameraStreamRef.current = null
+      void recordMonitoringEvent('camera_stopped', { reason: 'video_track_ended' })
+      setCameraStreamStatus('Camera disconnected')
+      setFaceDetectionStatus('Paused · camera stream ended')
+      setCameraStream(null)
+    }
+    track?.addEventListener('ended', onTrackEnded)
+    if (!track || track.readyState !== 'live' || !cameraStream.active) {
+      onTrackEnded()
+      return () => track?.removeEventListener('ended', onTrackEnded)
+    }
+    if (!videoElement) {
+      setCameraStreamStatus('Reconnecting camera preview')
+    } else {
+      setCameraStreamStatus('Verifying camera preview')
+      void waitForVideoPlayback(cameraStream, videoElement).then(() => {
+        if (active && cameraStreamRef.current === cameraStream) {
+          setCameraStreamStatus('Camera active · video playing')
+        }
+      }).catch(playError => {
+        if (!active) return
+        setCameraStreamStatus(
+          playError.message?.includes('disconnected') || playError.message?.includes('stopped')
+            ? 'Camera disconnected'
+            : 'Camera playback failed',
+        )
+        setError(`Camera preview could not be verified. ${playError.message || 'Video playback failed.'}`)
+      })
+    }
     return () => {
       active = false
-      if (video?.srcObject === cameraStream) {
-        video.pause()
-        video.srcObject = null
+      track?.removeEventListener('ended', onTrackEnded)
+      if (videoElement?.srcObject === cameraStream) {
+        videoElement.pause()
+        videoElement.srcObject = null
       }
     }
-  }, [cameraStream, exam?.attempt_id, timerActive, waitForVideoPlayback])
+  }, [cameraStream, videoElement, waitForVideoPlayback, recordMonitoringEvent])
 
   useEffect(() => {
     let active = true
@@ -494,10 +626,10 @@ export function ExamRoom() {
       return () => { active = false }
     }
 
-    const video = videoRef.current
+    const video = videoElement
     const track = cameraStream.getVideoTracks()[0]
     if (!track || track.readyState !== 'live') {
-      setCameraStreamStatus('Stopped by device or browser')
+      setCameraStreamStatus('Camera disconnected')
       setFaceDetectionStatus('Paused')
       return () => { active = false }
     }
@@ -536,13 +668,6 @@ export function ExamRoom() {
       timer = setTimeout(checkFaces, 2000)
     }
 
-    const onTrackEnded = () => {
-      void recordMonitoringEvent('camera_stopped', { reason: 'video_track_ended' })
-      setCameraStreamStatus('Stopped by device or browser')
-      setFaceDetectionStatus('Paused · camera stream ended')
-      setCameraStream(null)
-    }
-    track.addEventListener('ended', onTrackEnded)
     const initializeDetector = async () => {
       try {
         setFaceDetectionStatus('Loading local detector')
@@ -569,20 +694,23 @@ export function ExamRoom() {
     return () => {
       active = false
       clearTimeout(timer)
-      track.removeEventListener('ended', onTrackEnded)
       detector?.close()
     }
-  }, [cameraStream, timerActive, recordMonitoringEvent])
+  }, [cameraStream, timerActive, recordMonitoringEvent, videoElement])
 
   useEffect(() => {
-    if (timerActive || !cameraStream) return
+    if (!exam?.attempt_id || timerActive || !cameraStream) return
+    cameraStreamRef.current = null
     cameraStream.getTracks().forEach(track => track.stop())
     setCameraStream(null)
-    setCameraStreamStatus('Not active')
+    setCameraStreamStatus('Camera stopped')
     setFaceDetectionStatus('Not active')
-  }, [timerActive, cameraStream])
+  }, [exam?.attempt_id, timerActive, cameraStream])
 
-  useEffect(() => () => cameraStream?.getTracks().forEach(track => track.stop()), [cameraStream])
+  useEffect(() => () => {
+    cameraStreamRef.current?.getTracks().forEach(track => track.stop())
+    cameraStreamRef.current = null
+  }, [])
 
   useEffect(() => {
     if (seconds === 0 && !busy && !result && !expired && !submitted) submit(false)
@@ -616,6 +744,21 @@ export function ExamRoom() {
   const unsyncedMonitoringMessage = monitoringPending
     ? ` ${monitoringPending} monitoring signal(s) could not be synced; they are not available as review records.`
     : ''
+  const showCameraPreview = Boolean(cameraStream) || [
+    'Requesting camera permission',
+    'Camera initializing',
+    'Verifying camera preview',
+    'Reconnecting camera preview',
+    'Camera active · video playing',
+  ].includes(cameraStreamStatus)
+  const cameraNeedsRetry = [
+    'Camera playback failed',
+    'Camera initialization failed',
+    'Camera initialization failed · unsupported browser',
+    'Camera disconnected',
+    'No camera device available',
+    'Camera permission denied',
+  ].includes(cameraStreamStatus)
 
   if (loading) return <div className="center-screen"><div className="spinner"/></div>
   if (error && !exam && !paper?.camera_required) return <div className="card"><div className="error">{error}</div><button className="btn secondary" onClick={() => navigate('/exams')}>Back to exams</button></div>
@@ -623,10 +766,10 @@ export function ExamRoom() {
     <h2>Camera access required</h2>
     <p>This exam requires camera permission and a working local preview before an attempt begins. Face-presence checks run on this device when supported; camera signals are review indicators, not proof of misconduct. Video is not uploaded or stored.</p>
     <p className="muted small">Allow camera access to start the exam. If permission is denied or unavailable, the exam will not begin.</p>
-    <video ref={videoRef} autoPlay playsInline muted hidden={!cameraStream} className="monitor-camera-preview" aria-label="Local camera preview"/>
-    <div className="small">Permission: {cameraPermissionStatus} · Stream: {cameraStreamStatus}</div>
+    <video ref={setVideoRef} autoPlay playsInline muted hidden={!showCameraPreview} className="monitor-camera-preview" style={{ width: '100%', maxWidth: 360, aspectRatio: '4 / 3', objectFit: 'cover', background: '#111', borderRadius: 8 }} aria-label="Local camera preview"/>
+    <div className="small">Camera: {cameraStreamStatus} · Permission: {cameraPermissionStatus}</div>
     {error && <div className="error">{error}</div>}
-    <div className="row"><button className="btn" onClick={startRequiredCamera}>Allow camera and start exam</button><button className="btn secondary" onClick={() => navigate('/exams')}>Back to exams</button></div>
+    <div className="row"><button className="btn" disabled={cameraStreamStatus === 'Requesting camera permission'} onClick={startRequiredCamera}>{cameraPermissionStatus === 'Not requested' ? 'Allow camera and start exam' : 'Retry camera and start exam'}</button><button className="btn secondary" onClick={() => navigate('/exams')}>Back to exams</button></div>
   </section>
   if (expired) return <CompletionCard title="Time is up" message="Your attempt was marked as expired." onBack={() => navigate('/exams')}/>
   if (submitted) return <CompletionCard title="Exam submitted" message={`${submittedForTabSwitches ? `Your exam was submitted after more than ${TAB_SWITCHES_ALLOWED} detected tab switches. Monitoring signals are indicators, not proof of misconduct.` : 'Your PDF exam attempt was recorded. This paper is not automatically graded online.'}${unsyncedMonitoringMessage}`} onBack={() => navigate('/exams')}/>
@@ -644,8 +787,8 @@ export function ExamRoom() {
       <div className="row between"><div className="row"><ShieldAlert size={19}/><div><b>{exam.exam.monitoring_enabled ? 'Exam monitoring is on' : 'Camera is required'}</b><div className="small">Tab and camera signals are review indicators, not proof of misconduct. Video stays on this device and is not recorded or uploaded.</div></div></div><span className="badge">{monitorWarnings} events synced this session</span></div>
       {exam.exam.monitoring_enabled && <p className="small">Tab switches detected: {tabSwitches} · tab events synced this session: {savedTabSwitches} · pending sync: {monitoringPending}. After {TAB_SWITCHES_ALLOWED} allowed switches, the next detected switch submits the exam.</p>}
       {monitoringStorageWarning && <p className="small">{monitoringStorageWarning}</p>}
-      <div className="row between monitoring-camera-row"><div><b><Camera size={15}/> Permission: {cameraPermissionStatus} · stream: {cameraStreamStatus}</b><div className="small">Face checks: {faceDetectionStatus}. Inference runs locally; detector assets load from Google and jsDelivr. Camera video is not transmitted. Signals are not proof of misconduct.</div></div>{cameraStream ? (!exam.exam.camera_required && <button type="button" className="btn secondary" onClick={stopCamera}>Turn camera off</button>) : <button type="button" className="btn secondary" disabled={cameraPermissionStatus === 'Requesting permission'} onClick={startCamera}>{cameraPermissionStatus === 'Granted' ? 'Restart camera' : 'Give permission and start camera'}</button>}</div>
-      <video ref={videoRef} autoPlay playsInline muted hidden={!cameraStream} className="monitor-camera-preview" aria-label="Local camera preview"/>
+      <div className="row between monitoring-camera-row"><div><b><Camera size={15}/> Camera: {cameraStreamStatus} · permission: {cameraPermissionStatus}</b><div className="small">Face checks: {faceDetectionStatus}. Inference runs locally; detector assets load from Google and jsDelivr. Camera video is not transmitted. Signals are not proof of misconduct.</div></div>{cameraStream && !cameraNeedsRetry ? (!exam.exam.camera_required && <button type="button" className="btn secondary" onClick={stopCamera}>Turn camera off</button>) : <button type="button" className="btn secondary" disabled={cameraStreamStatus === 'Requesting camera permission'} onClick={startCamera}>{cameraPermissionStatus === 'Granted' ? 'Retry camera' : 'Give camera permission'}</button>}</div>
+      <video ref={setVideoRef} autoPlay playsInline muted hidden={!showCameraPreview} className="monitor-camera-preview" style={{ width: '100%', maxWidth: 360, aspectRatio: '4 / 3', objectFit: 'cover', background: '#111', borderRadius: 8 }} aria-label="Local camera preview"/>
     </section>}
 
     {pdfOnly ? <section className="card pdf-student-card">
