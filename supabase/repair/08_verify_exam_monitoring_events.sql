@@ -1,11 +1,25 @@
--- Read-only verification for public.exam_monitoring_events.
--- Run after migration 202611110002 or repair 08_create_exam_monitoring_events.sql.
+-- Read-only verification for the monitoring switch and event table.
+-- This file contains SELECT statements only.
+
+select
+  to_regclass('public.exams') is not null as exams_exists,
+  exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'exams'
+      and column_name = 'monitoring_enabled'
+      and udt_name = 'bool'
+      and is_nullable = 'NO'
+      and replace(coalesce(column_default, ''), ' ', '') = 'false'
+  ) as monitoring_enabled_matches_expected;
 
 select
   to_regclass('public.exam_monitoring_events') is not null
     as exam_monitoring_events_exists;
 
 select
+  table_name,
   column_name,
   data_type,
   udt_name,
@@ -13,8 +27,11 @@ select
   column_default
 from information_schema.columns
 where table_schema = 'public'
-  and table_name = 'exam_monitoring_events'
-order by ordinal_position;
+  and (
+    (table_name = 'exams' and column_name = 'monitoring_enabled')
+    or table_name = 'exam_monitoring_events'
+  )
+order by table_name, ordinal_position;
 
 select
   c.conname as constraint_name,
@@ -37,16 +54,12 @@ order by c.contype, c.conname;
 select
   schemaname,
   tablename,
-  policyname,
-  permissive,
-  roles,
-  cmd,
-  qual,
-  with_check
-from pg_policies
+  indexname,
+  indexdef
+from pg_indexes
 where schemaname = 'public'
   and tablename = 'exam_monitoring_events'
-order by policyname;
+order by indexname;
 
 select
   n.nspname as schema_name,
@@ -59,32 +72,24 @@ where n.nspname = 'public'
   and c.relname = 'exam_monitoring_events';
 
 select
+  schemaname,
+  tablename,
+  policyname,
+  permissive,
+  roles,
+  cmd,
+  qual,
+  with_check
+from pg_policies
+where schemaname = 'public'
+  and tablename in ('exam_monitoring_events', 'exams', 'exam_attempts')
+order by tablename, policyname;
+
+select
   grantee,
   privilege_type
-from information_schema.role_table_grants
+from information_schema.table_privileges
 where table_schema = 'public'
   and table_name = 'exam_monitoring_events'
-  and grantee in ('anon', 'authenticated', 'service_role')
+  and grantee in ('PUBLIC', 'anon', 'authenticated', 'service_role')
 order by grantee, privilege_type;
-
-select
-  event_type,
-  count(*) as event_count
-from public.exam_monitoring_events
-group by event_type
-order by event_type;
-
-select
-  count(*) filter (
-    where event_type not in (
-      'tab_hidden',
-      'window_blur',
-      'camera_started',
-      'camera_stopped',
-      'face_absent',
-      'multiple_people',
-      'camera_unsupported',
-      'camera_denied'
-    )
-  ) as invalid_event_type_count
-from public.exam_monitoring_events;

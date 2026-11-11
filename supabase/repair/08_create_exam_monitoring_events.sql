@@ -1,4 +1,5 @@
--- Standalone, repeatable repair for exam monitoring events.
+-- Standalone, repeatable repair for per-exam monitoring and its event table.
+-- New/existing exams default to monitoring disabled unless explicitly enabled.
 begin;
 
 do $$
@@ -10,28 +11,61 @@ begin
   end if;
 
   if to_regprocedure('public.is_admin()') is null
-     or to_regprocedure('public.is_approved_teacher()') is null then
-    raise exception 'ExamGuard admin and approved-teacher helper functions must exist first';
+     or to_regprocedure('public.is_approved_teacher()') is null
+     or to_regprocedure('public.current_role()') is null then
+    raise exception 'ExamGuard role helper functions must exist first';
   end if;
 
   if not exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'exams'
-      and column_name = 'monitoring_enabled' and udt_name = 'bool'
-  ) or not exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'exam_attempts'
-      and column_name = 'status' and udt_name = 'text'
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'exam_attempts'
+      and column_name = 'status'
+      and udt_name = 'text'
   ) then
-    raise exception 'Exam monitoring requires exams.monitoring_enabled and exam_attempts.status';
+    raise exception 'public.exam_attempts.status must exist as text';
   end if;
 end;
 $$;
 
+alter table public.exams
+  add column if not exists monitoring_enabled boolean not null default false;
+
+do $$
+declare
+  actual_type text;
+  actual_not_null boolean;
+begin
+  select t.typname, a.attnotnull
+    into actual_type, actual_not_null
+  from pg_attribute a
+  join pg_type t on t.oid = a.atttypid
+  left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+  where a.attrelid = 'public.exams'::regclass
+    and a.attname = 'monitoring_enabled'
+    and a.attnum > 0
+    and not a.attisdropped;
+
+  if not found
+     or actual_type <> 'bool'
+     or not actual_not_null then
+    raise exception 'public.exams.monitoring_enabled must be BOOLEAN NOT NULL';
+  end if;
+end;
+$$;
+
+-- The earlier AI-upgrade migration used DEFAULT true. Change only the default,
+-- preserving all existing exam values and rows.
+alter table public.exams
+  alter column monitoring_enabled set default false;
+
 create table if not exists public.exam_monitoring_events (
   id uuid primary key default gen_random_uuid(),
-  attempt_id uuid not null references public.exam_attempts(id) on delete cascade,
-  student_id uuid not null references public.profiles(id) on delete cascade,
+  attempt_id uuid not null
+    references public.exam_attempts(id) on delete cascade,
+  student_id uuid not null
+    references public.profiles(id) on delete cascade,
   event_type text not null
     check (event_type in (
       'tab_hidden',
@@ -79,15 +113,20 @@ begin
       and not a.attisdropped;
 
     if not found then
-      raise exception 'public.exam_monitoring_events is missing column %', expected.column_name;
+      raise exception 'public.exam_monitoring_events is missing column %',
+        expected.column_name;
     end if;
-    if actual_type <> expected.type_name or actual_not_null <> expected.not_null then
-      raise exception 'public.exam_monitoring_events.% has an incompatible type or nullability', expected.column_name;
+    if actual_type <> expected.type_name
+       or actual_not_null <> expected.not_null then
+      raise exception
+        'public.exam_monitoring_events.% has an incompatible type or nullability',
+        expected.column_name;
     end if;
     if expected.default_expression is not null
        and replace(coalesce(actual_default, ''), ' ', '')
          <> replace(expected.default_expression, ' ', '') then
-      raise exception 'public.exam_monitoring_events.% has an incompatible default', expected.column_name;
+      raise exception 'public.exam_monitoring_events.% has an incompatible default',
+        expected.column_name;
     end if;
   end loop;
 
@@ -110,12 +149,15 @@ begin
     join pg_attribute dst on dst.attrelid = c.confrelid and dst.attnum = c.confkey[1]
     where c.conrelid = 'public.exam_monitoring_events'::regclass
       and c.contype = 'f'
-      and cardinality(c.conkey) = 1 and cardinality(c.confkey) = 1
+      and cardinality(c.conkey) = 1
+      and cardinality(c.confkey) = 1
       and src.attname = 'attempt_id'
-      and c.confrelid = 'public.exam_attempts'::regclass and dst.attname = 'id'
+      and c.confrelid = 'public.exam_attempts'::regclass
+      and dst.attname = 'id'
       and c.confdeltype = 'c'
   ) then
-    raise exception 'attempt_id must reference public.exam_attempts(id) ON DELETE CASCADE';
+    raise exception
+      'attempt_id must reference public.exam_attempts(id) ON DELETE CASCADE';
   end if;
 
   if not exists (
@@ -125,19 +167,24 @@ begin
     join pg_attribute dst on dst.attrelid = c.confrelid and dst.attnum = c.confkey[1]
     where c.conrelid = 'public.exam_monitoring_events'::regclass
       and c.contype = 'f'
-      and cardinality(c.conkey) = 1 and cardinality(c.confkey) = 1
+      and cardinality(c.conkey) = 1
+      and cardinality(c.confkey) = 1
       and src.attname = 'student_id'
-      and c.confrelid = 'public.profiles'::regclass and dst.attname = 'id'
+      and c.confrelid = 'public.profiles'::regclass
+      and dst.attname = 'id'
       and c.confdeltype = 'c'
   ) then
-    raise exception 'student_id must reference public.profiles(id) ON DELETE CASCADE';
+    raise exception
+      'student_id must reference public.profiles(id) ON DELETE CASCADE';
   end if;
 
-  select pg_get_constraintdef(c.oid) into definition
+  select pg_get_constraintdef(c.oid)
+    into definition
   from pg_constraint c
   where c.conrelid = 'public.exam_monitoring_events'::regclass
     and c.contype = 'c'
     and pg_get_constraintdef(c.oid) ilike '%event_type%';
+
   if definition is null
      or definition not ilike '%tab_hidden%'
      or definition not ilike '%window_blur%'
@@ -148,19 +195,23 @@ begin
      or definition not ilike '%camera_unsupported%'
      or definition not ilike '%camera_denied%'
      or length(definition) - length(replace(definition, '''', '')) <> 16 then
-    raise exception 'public.exam_monitoring_events has an incompatible event_type constraint';
+    raise exception
+      'public.exam_monitoring_events has an incompatible event_type constraint';
   end if;
 
-  select pg_get_constraintdef(c.oid) into definition
+  select pg_get_constraintdef(c.oid)
+    into definition
   from pg_constraint c
   where c.conrelid = 'public.exam_monitoring_events'::regclass
     and c.contype = 'c'
     and pg_get_constraintdef(c.oid) ilike '%metadata%';
+
   if definition is null
      or definition not ilike '%jsonb_typeof%'
      or definition not ilike '%object%'
      or length(definition) - length(replace(definition, '''', '')) <> 2 then
-    raise exception 'public.exam_monitoring_events has an incompatible metadata constraint';
+    raise exception
+      'public.exam_monitoring_events has an incompatible metadata constraint';
   end if;
 
   if exists (
@@ -174,7 +225,8 @@ begin
         'monitoring_event_admin_read'
       )
   ) then
-    raise exception 'Unrecognized policy exists on public.exam_monitoring_events; inspect it before continuing';
+    raise exception
+      'Unrecognized policy exists on public.exam_monitoring_events; inspect it before continuing';
   end if;
 end;
 $$;
@@ -196,7 +248,8 @@ create policy monitoring_event_student_insert
   for insert
   to authenticated
   with check (
-    student_id = auth.uid()
+    public.current_role() = 'student'
+    and student_id = auth.uid()
     and exists (
       select 1
       from public.exam_attempts a
