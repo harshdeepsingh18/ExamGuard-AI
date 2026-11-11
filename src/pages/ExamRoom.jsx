@@ -1,9 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Camera, CheckCircle2, Clock3, ExternalLink, FileText, RefreshCw, ShieldAlert } from 'lucide-react'
+import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 import { configured, supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { createExamPaperSignedUrl, formatFileSize } from '../lib/examPapers'
+
+const TAB_SWITCHES_ALLOWED = 2
+const MONITORING_EVENT_TYPES = new Set([
+  'tab_hidden',
+  'window_blur',
+  'camera_started',
+  'camera_stopped',
+  'face_absent',
+  'multiple_people',
+  'camera_unsupported',
+  'camera_denied',
+])
+const MEDIAPIPE_WASM_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm'
+const FACE_DETECTOR_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'
 
 export function ExamRoom() {
   const { id } = useParams()
@@ -19,29 +34,81 @@ export function ExamRoom() {
   const [result, setResult] = useState(null)
   const [expired, setExpired] = useState(false)
   const [submitted, setSubmitted] = useState(false)
+  const [submittedForTabSwitches, setSubmittedForTabSwitches] = useState(false)
   const [showPaper, setShowPaper] = useState(false)
   const [reportReason, setReportReason] = useState('')
   const [reportMessage, setReportMessage] = useState('')
   const [monitorWarnings, setMonitorWarnings] = useState(0)
-  const [cameraStatus, setCameraStatus] = useState('Not started')
+  const [monitoringPending, setMonitoringPending] = useState(0)
+  const [monitoringStorageWarning, setMonitoringStorageWarning] = useState('')
+  const [tabSwitches, setTabSwitches] = useState(0)
+  const [savedTabSwitches, setSavedTabSwitches] = useState(0)
+  const [cameraPermissionStatus, setCameraPermissionStatus] = useState('Not requested')
+  const [cameraStreamStatus, setCameraStreamStatus] = useState('Not active')
+  const [faceDetectionStatus, setFaceDetectionStatus] = useState('Not started')
   const [cameraStream, setCameraStream] = useState(null)
   const videoRef = useRef(null)
   const lastEventRef = useRef({})
+  const eventQueueRef = useRef([])
+  const flushingEventsRef = useRef(null)
+  const flushMonitoringEventsRef = useRef(null)
+  const restoredQueueKeyRef = useRef('')
+  const monitoringActiveRef = useRef(false)
+  const componentActiveRef = useRef(true)
+  const tabSwitchCountRef = useRef(0)
+  const eventStorageKey = exam?.attempt_id && profile?.id
+    ? `examguard-monitor-events:${profile.id}:${exam.attempt_id}`
+    : ''
   const timerActive = seconds !== null && !result && !expired && !submitted
+  const monitoringActive = timerActive && !busy && Boolean(
+    configured && exam?.attempt_id
+      && exam.exam.monitoring_enabled
+      && profile?.id,
+  )
+  monitoringActiveRef.current = monitoringActive
+
+  useEffect(() => {
+    componentActiveRef.current = true
+    return () => { componentActiveRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    if (!exam?.attempt_id) return
+    tabSwitchCountRef.current = 0
+    lastEventRef.current = {}
+    eventQueueRef.current = []
+    setTabSwitches(0)
+    setSavedTabSwitches(0)
+    setMonitorWarnings(0)
+    setMonitoringPending(0)
+  }, [exam?.attempt_id])
+
+  const activateExam = useCallback(async (paperData, isActive = () => true) => {
+    setError('')
+    setLoading(true)
+    const { data, error: startError } = await supabase.rpc('start_exam', { p_exam: id })
+    if (!isActive()) return false
+    if (startError) {
+      setError(startError.message)
+      setLoading(false)
+      return false
+    }
+
+    setExam(data)
+    setPaper(paperData)
+    setAnswers(Object.fromEntries((data.saved_answers || []).map(answer => [answer.question_id, answer.answer_text ?? answer.selected_answer])))
+    const elapsed = Math.floor((Date.now() - new Date(data.attempt_started_at).getTime()) / 1000)
+    setSeconds(Math.max(0, data.exam.duration_minutes * 60 - elapsed))
+    setLoading(false)
+    return true
+  }, [id])
 
   useEffect(() => {
     if (!configured) { setError('Connect Supabase before starting an exam.'); setLoading(false); return }
     let active = true
     const openExam = async () => {
-      const { data, error: startError } = await supabase.rpc('start_exam', { p_exam: id })
-      if (!active) return
-      if (startError) {
-        setError(startError.message)
-        setLoading(false)
-        return
-      }
       const { data: paperData, error: paperError } = await supabase.from('exams')
-        .select('exam_type,pdf_storage_path,pdf_filename,pdf_size_bytes,pdf_enabled')
+        .select('exam_type,pdf_storage_path,pdf_filename,pdf_size_bytes,pdf_enabled,camera_required')
         .eq('id', id).single()
       if (!active) return
       if (paperError) {
@@ -49,20 +116,108 @@ export function ExamRoom() {
         setLoading(false)
         return
       }
-      setExam(data)
-      setPaper(paperData)
-      setAnswers(Object.fromEntries((data.saved_answers || []).map(answer => [answer.question_id, answer.answer_text ?? answer.selected_answer])))
-      const elapsed = Math.floor((Date.now() - new Date(data.attempt_started_at).getTime()) / 1000)
-      setSeconds(Math.max(0, data.exam.duration_minutes * 60 - elapsed))
-      setLoading(false)
+      if (paperData.camera_required) {
+        setPaper(paperData)
+        setLoading(false)
+        return
+      }
+      await activateExam(paperData, () => active)
     }
     openExam()
     return () => { active = false }
-  }, [id])
+  }, [id, activateExam])
+
+  const waitForVideoPlayback = useCallback(async stream => {
+    const video = videoRef.current
+    if (!video) throw new Error('The local camera preview is unavailable.')
+    if (!stream.getVideoTracks().some(track => track.readyState === 'live')) {
+      throw new Error('The camera stream is not active.')
+    }
+
+    video.srcObject = stream
+    let cleanup = () => {}
+    const playing = new Promise((resolve, reject) => {
+      const finish = callback => value => {
+        cleanup()
+        callback(value)
+      }
+      const onPlaying = finish(resolve)
+      const onError = finish(() => reject(new Error('The camera preview could not start.')))
+      const timeout = setTimeout(
+        () => onError(new Error('Timed out waiting for the camera preview.')),
+        10000,
+      )
+      cleanup = () => {
+        clearTimeout(timeout)
+        video.removeEventListener('playing', onPlaying)
+        video.removeEventListener('error', onError)
+      }
+      video.addEventListener('playing', onPlaying, { once: true })
+      video.addEventListener('error', onError, { once: true })
+    })
+
+    try {
+      await video.play()
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.paused) {
+        await playing
+      } else {
+        cleanup()
+      }
+    } catch (playError) {
+      cleanup()
+      throw playError
+    }
+
+    if (!stream.getVideoTracks().some(track => track.readyState === 'live')) {
+      throw new Error('The camera stopped before its preview became active.')
+    }
+    setCameraStreamStatus('Live')
+  }, [])
+
+  const startRequiredCamera = async () => {
+    setError('')
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraPermissionStatus('Unsupported by this browser')
+      setCameraStreamStatus('Not active')
+      setError('This exam requires camera access, but this browser cannot provide it.')
+      return
+    }
+    setCameraPermissionStatus('Requesting permission')
+    setCameraStreamStatus('Waiting for camera')
+    let stream
+    let permissionGranted = false
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      if (!componentActiveRef.current) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      setCameraPermissionStatus('Granted')
+      permissionGranted = true
+      await waitForVideoPlayback(stream)
+      setCameraStream(stream)
+      const started = await activateExam(paper, () => componentActiveRef.current)
+      if (!started) {
+        stream.getTracks().forEach(track => track.stop())
+        if (componentActiveRef.current) {
+          setCameraStream(null)
+          setCameraStreamStatus('Not active')
+        }
+      }
+    } catch (cameraError) {
+      stream?.getTracks().forEach(track => track.stop())
+      if (!permissionGranted) setCameraPermissionStatus('Denied or unavailable')
+      setCameraStreamStatus('Not active')
+      setError(`Camera access is required to begin this exam. ${cameraError.message || ''}`.trim())
+    }
+  }
 
   const submit = useCallback(async (confirmPdf = true) => {
     if (busy || expired || submitted || !exam || !configured) return
     if (paper?.exam_type === 'pdf' && confirmPdf && !confirm('Finish and submit this PDF exam?')) return
+    if (monitoringActiveRef.current && eventQueueRef.current.length) {
+      await flushMonitoringEventsRef.current?.()
+    }
     setBusy(true)
     const p_answers = Object.entries(answers).map(([question_id, answer]) => typeof answer === 'number' ? ({ question_id, selected_answer: answer }) : ({ question_id, answer_text: answer }))
     const { data, error: submitError } = await supabase.rpc('submit_exam', { p_attempt: exam.attempt_id, p_answers })
@@ -90,73 +245,341 @@ export function ExamRoom() {
     return () => clearInterval(timer)
   }, [timerActive])
 
-  const recordMonitoringEvent = useCallback(async (eventType, metadata = {}) => {
-    if (!exam?.attempt_id || !exam.exam.monitoring_enabled) return
+  const persistEventQueue = useCallback(queue => {
+    if (!eventStorageKey) return false
+    try {
+      if (queue.length) sessionStorage.setItem(eventStorageKey, JSON.stringify(queue))
+      else sessionStorage.removeItem(eventStorageKey)
+      return true
+    } catch (storageError) {
+      setMonitoringStorageWarning(`Pending events may not survive a page reload: ${storageError.message}`)
+      return false
+    }
+  }, [eventStorageKey])
+
+  const flushMonitoringEvents = useCallback(() => {
+    if (!eventStorageKey) return Promise.resolve(false)
+    if (flushingEventsRef.current) {
+      return flushingEventsRef.current.then(saved =>
+        saved && eventQueueRef.current.length ? flushMonitoringEvents() : saved,
+      )
+    }
+
+    const flushPromise = (async () => {
+      while (eventQueueRef.current.length) {
+        const event = eventQueueRef.current[0]
+        let eventError = null
+        let saved = false
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            const { error } = await supabase.from('exam_monitoring_events').insert(event)
+            if (!error || error.code === '23505') {
+              saved = true
+              break
+            }
+            eventError = error
+          } catch (error) {
+            eventError = error
+          }
+
+          const retryable = eventError instanceof TypeError
+            || eventError?.status === 0
+            || eventError?.status === 429
+            || eventError?.status >= 500
+          if (!retryable || attempt === 2) break
+          await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt)))
+        }
+
+        if (!saved) {
+          setMonitoringPending(eventQueueRef.current.length)
+          if (eventError) setError(`Monitoring event could not be saved: ${eventError.message || 'Temporary network error.'}`)
+          persistEventQueue(eventQueueRef.current)
+          return false
+        }
+
+        eventQueueRef.current.shift()
+        persistEventQueue(eventQueueRef.current)
+        setMonitoringPending(eventQueueRef.current.length)
+        setMonitorWarnings(value => value + 1)
+        if (event.event_type === 'tab_hidden') setSavedTabSwitches(value => value + 1)
+        setError(current =>
+          current.startsWith('Monitoring event could not be saved:') ? '' : current,
+        )
+      }
+      return true
+    })()
+    flushingEventsRef.current = flushPromise
+    void flushPromise.then(() => {
+      if (flushingEventsRef.current === flushPromise) flushingEventsRef.current = null
+    }, () => {
+      if (flushingEventsRef.current === flushPromise) flushingEventsRef.current = null
+    })
+    return flushPromise
+  }, [eventStorageKey, persistEventQueue])
+  flushMonitoringEventsRef.current = flushMonitoringEvents
+
+  const recordMonitoringEvent = useCallback((eventType, metadata = {}) => {
+    if (!monitoringActive || !monitoringActiveRef.current) return
     const now = Date.now()
-    if (now - (lastEventRef.current[eventType] || 0) < 4000) return
+    if (eventType !== 'tab_hidden' && now - (lastEventRef.current[eventType] || 0) < 4000) return
+
+    const eventId = globalThis.crypto?.randomUUID?.()
+    if (!eventId) {
+      setError('Monitoring event could not be saved: secure event IDs are unavailable in this browser.')
+      return
+    }
+
+    const event = {
+      id: eventId,
+      attempt_id: exam.attempt_id,
+      student_id: profile.id,
+      event_type: eventType,
+      occurred_at: new Date(now).toISOString(),
+      metadata,
+    }
+    eventQueueRef.current.push(event)
     lastEventRef.current[eventType] = now
-    setMonitorWarnings(value => value + 1)
-    const { error: eventError } = await supabase.from('exam_monitoring_events').insert({ attempt_id: exam.attempt_id, student_id: profile.id, event_type: eventType, metadata })
-    if (eventError) setError(`Monitoring event could not be saved: ${eventError.message}`)
-  }, [exam, profile?.id])
+    setMonitoringPending(eventQueueRef.current.length)
+    persistEventQueue(eventQueueRef.current)
+    return flushMonitoringEvents()
+  }, [exam?.attempt_id, flushMonitoringEvents, monitoringActive, persistEventQueue, profile?.id])
 
   useEffect(() => {
-    if (!timerActive || !exam?.exam.monitoring_enabled) return
-    const onVisibility = () => { if (document.visibilityState === 'hidden') recordMonitoringEvent('tab_hidden') }
-    const onBlur = () => recordMonitoringEvent('window_blur')
+    if (!eventStorageKey || restoredQueueKeyRef.current === eventStorageKey) return
+    restoredQueueKeyRef.current = eventStorageKey
+    try {
+      const restored = JSON.parse(sessionStorage.getItem(eventStorageKey) || '[]')
+      if (!Array.isArray(restored)) throw new Error('Stored monitoring queue has an invalid format.')
+      eventQueueRef.current = restored.filter(event =>
+        event?.attempt_id === exam.attempt_id
+        && event?.student_id === profile.id
+        && typeof event?.id === 'string'
+        && MONITORING_EVENT_TYPES.has(event?.event_type),
+      )
+      setMonitoringPending(eventQueueRef.current.length)
+      if (eventQueueRef.current.length && monitoringActiveRef.current) void flushMonitoringEvents()
+    } catch (storageError) {
+      setError(`Pending monitoring events could not be restored: ${storageError.message}`)
+    }
+  }, [eventStorageKey, exam?.attempt_id, flushMonitoringEvents, profile?.id])
+
+  useEffect(() => {
+    if (!monitoringPending || !monitoringActive) return
+    const retryPending = () => { void flushMonitoringEvents() }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') retryPending()
+    }
+    window.addEventListener('online', retryPending)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('online', retryPending)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [flushMonitoringEvents, monitoringActive, monitoringPending])
+
+  useEffect(() => {
+    if (!monitoringActive) return
+    let wasHidden = document.visibilityState === 'hidden'
+    let blurTimer
+    const onVisibility = () => {
+      const isHidden = document.visibilityState === 'hidden'
+      if (isHidden && !wasHidden) {
+        wasHidden = true
+        clearTimeout(blurTimer)
+        const nextSwitchCount = tabSwitchCountRef.current + 1
+        tabSwitchCountRef.current = nextSwitchCount
+        setTabSwitches(nextSwitchCount)
+        void (async () => {
+          await recordMonitoringEvent('tab_hidden')
+          if (nextSwitchCount > TAB_SWITCHES_ALLOWED) {
+            setSubmittedForTabSwitches(true)
+            await submit(false)
+          }
+        })()
+      } else if (!isHidden) {
+        wasHidden = false
+      }
+    }
+    const onBlur = () => {
+      clearTimeout(blurTimer)
+      blurTimer = setTimeout(() => {
+        if (document.visibilityState !== 'hidden') void recordMonitoringEvent('window_blur')
+      }, 150)
+    }
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('blur', onBlur)
-    return () => { document.removeEventListener('visibilitychange', onVisibility); window.removeEventListener('blur', onBlur) }
-  }, [timerActive, exam?.exam.monitoring_enabled, recordMonitoringEvent])
+    return () => {
+      clearTimeout(blurTimer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [monitoringActive, recordMonitoringEvent, submit])
+
+  useEffect(() => {
+    if (cameraStream && timerActive && exam?.exam.camera_required) {
+      void recordMonitoringEvent('camera_started')
+    }
+  }, [cameraStream, timerActive, exam?.exam.camera_required, recordMonitoringEvent])
 
   const startCamera = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraStatus('This browser does not support camera access')
+      setCameraPermissionStatus('Unsupported by this browser')
+      setCameraStreamStatus('Not active')
+      setFaceDetectionStatus('Unavailable')
       await recordMonitoringEvent('camera_unsupported')
       return
     }
+    setCameraPermissionStatus('Requesting permission')
+    setCameraStreamStatus('Waiting for camera')
+    let stream
+    let permissionGranted = false
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      setCameraPermissionStatus('Granted')
+      permissionGranted = true
+      await waitForVideoPlayback(stream)
+      if (!componentActiveRef.current) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
       setCameraStream(stream)
-      setCameraStatus('Camera on · local preview only')
       await recordMonitoringEvent('camera_started')
-    } catch {
-      setCameraStatus('Camera permission denied or unavailable')
-      await recordMonitoringEvent('camera_denied')
+    } catch (cameraError) {
+      stream?.getTracks().forEach(track => track.stop())
+      setCameraStreamStatus('Not active')
+      setFaceDetectionStatus('Unavailable')
+      if (!permissionGranted) {
+        setCameraPermissionStatus('Denied or unavailable')
+        await recordMonitoringEvent('camera_denied')
+      }
+      setError(`Camera could not be started: ${cameraError.message || 'Permission denied or unavailable.'}`)
     }
   }
 
   const stopCamera = async () => {
+    const savedEvent = recordMonitoringEvent('camera_stopped')
     cameraStream?.getTracks().forEach(track => track.stop())
     setCameraStream(null)
-    setCameraStatus('Camera off')
-    await recordMonitoringEvent('camera_stopped')
+    setCameraStreamStatus('Not active')
+    setFaceDetectionStatus('Not started')
+    await savedEvent
   }
 
   useEffect(() => {
-    if (!cameraStream || !timerActive) return
+    if (!cameraStream) return
     const video = videoRef.current
-    if (video) video.srcObject = cameraStream
-    if (!('FaceDetector' in window)) { setCameraStatus('Camera on · face checks are unsupported in this browser'); return }
     let active = true
-    const detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 3 })
-    const checkFaces = async () => {
-      if (!active || video?.readyState < 2) return
-      try {
-        const faces = await detector.detect(video)
-        if (faces.length === 0) await recordMonitoringEvent('face_absent')
-        if (faces.length > 1) await recordMonitoringEvent('multiple_people', { visible_face_count: Math.min(faces.length, 3) })
-      } catch { setCameraStatus('Camera on · face checks are unavailable') }
+    void waitForVideoPlayback(cameraStream).catch(playError => {
+      if (!active) return
+      setCameraStreamStatus('Preview unavailable')
+      setError(`Camera preview stopped: ${playError.message || 'Video playback failed.'}`)
+    })
+    return () => {
+      active = false
+      if (video?.srcObject === cameraStream) {
+        video.pause()
+        video.srcObject = null
+      }
     }
-    const timer = setInterval(checkFaces, 10000)
-    return () => { active = false; clearInterval(timer) }
+  }, [cameraStream, exam?.attempt_id, timerActive, waitForVideoPlayback])
+
+  useEffect(() => {
+    let active = true
+    let timer
+    let detector
+    let detectionRunning = false
+    let hasDetectedFrame = false
+    if (!cameraStream || !timerActive) {
+      setFaceDetectionStatus('Not active')
+      return () => { active = false }
+    }
+
+    const video = videoRef.current
+    const track = cameraStream.getVideoTracks()[0]
+    if (!track || track.readyState !== 'live') {
+      setCameraStreamStatus('Stopped by device or browser')
+      setFaceDetectionStatus('Paused')
+      return () => { active = false }
+    }
+
+    const checkFaces = async () => {
+      if (!active || detectionRunning) return
+      if (track.readyState !== 'live') {
+        setCameraStreamStatus('Stopped by device or browser')
+        setFaceDetectionStatus('Paused')
+        return
+      }
+      if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.paused) {
+        timer = setTimeout(checkFaces, 1000)
+        return
+      }
+      detectionRunning = true
+      try {
+        const detection = detector.detectForVideo(video, performance.now())
+        const faceCount = detection.detections.length
+        if (!hasDetectedFrame) {
+          hasDetectedFrame = true
+          setFaceDetectionStatus('Active · processed on this device')
+        }
+        if (faceCount === 0) void recordMonitoringEvent('face_absent')
+        if (faceCount > 1) {
+          void recordMonitoringEvent('multiple_people', { visible_face_count: Math.min(faceCount, 3) })
+        }
+      } catch (detectionError) {
+        setFaceDetectionStatus('Unavailable: detector error')
+        setError(`Local face detection stopped: ${detectionError.message || 'Unable to analyze a camera frame.'}`)
+        active = false
+        return
+      } finally {
+        detectionRunning = false
+      }
+      timer = setTimeout(checkFaces, 2000)
+    }
+
+    const onTrackEnded = () => {
+      void recordMonitoringEvent('camera_stopped', { reason: 'video_track_ended' })
+      setCameraStreamStatus('Stopped by device or browser')
+      setFaceDetectionStatus('Paused · camera stream ended')
+      setCameraStream(null)
+    }
+    track.addEventListener('ended', onTrackEnded)
+    const initializeDetector = async () => {
+      try {
+        setFaceDetectionStatus('Loading local detector')
+        const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_BASE)
+        detector = await FaceDetector.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: FACE_DETECTOR_MODEL, delegate: 'CPU' },
+          runningMode: 'VIDEO',
+          minDetectionConfidence: 0.5,
+          minSuppressionThreshold: 0.3,
+        })
+        if (!active) {
+          detector.close()
+          return
+        }
+        setFaceDetectionStatus('Detector ready · waiting for camera frame')
+        await checkFaces()
+      } catch (detectionError) {
+        if (!active) return
+        setFaceDetectionStatus('Unavailable · model could not load')
+        setError(`Local face detection could not start: ${detectionError.message || 'Detector assets are unavailable.'}`)
+      }
+    }
+    void initializeDetector()
+    return () => {
+      active = false
+      clearTimeout(timer)
+      track.removeEventListener('ended', onTrackEnded)
+      detector?.close()
+    }
   }, [cameraStream, timerActive, recordMonitoringEvent])
 
   useEffect(() => {
     if (timerActive || !cameraStream) return
     cameraStream.getTracks().forEach(track => track.stop())
     setCameraStream(null)
-    setCameraStatus('Camera off')
+    setCameraStreamStatus('Not active')
+    setFaceDetectionStatus('Not active')
   }, [timerActive, cameraStream])
 
   useEffect(() => () => cameraStream?.getTracks().forEach(track => track.stop()), [cameraStream])
@@ -190,11 +613,24 @@ export function ExamRoom() {
     else { setReportMessage('Report sent to the admin team.'); setReportReason('') }
   }
 
+  const unsyncedMonitoringMessage = monitoringPending
+    ? ` ${monitoringPending} monitoring signal(s) could not be synced; they are not available as review records.`
+    : ''
+
   if (loading) return <div className="center-screen"><div className="spinner"/></div>
-  if (error && !exam) return <div className="card"><div className="error">{error}</div><button className="btn secondary" onClick={() => navigate('/exams')}>Back to exams</button></div>
+  if (error && !exam && !paper?.camera_required) return <div className="card"><div className="error">{error}</div><button className="btn secondary" onClick={() => navigate('/exams')}>Back to exams</button></div>
+  if (!exam && paper?.camera_required) return <section className="card">
+    <h2>Camera access required</h2>
+    <p>This exam requires camera permission and a working local preview before an attempt begins. Face-presence checks run on this device when supported; camera signals are review indicators, not proof of misconduct. Video is not uploaded or stored.</p>
+    <p className="muted small">Allow camera access to start the exam. If permission is denied or unavailable, the exam will not begin.</p>
+    <video ref={videoRef} autoPlay playsInline muted hidden={!cameraStream} className="monitor-camera-preview" aria-label="Local camera preview"/>
+    <div className="small">Permission: {cameraPermissionStatus} · Stream: {cameraStreamStatus}</div>
+    {error && <div className="error">{error}</div>}
+    <div className="row"><button className="btn" onClick={startRequiredCamera}>Allow camera and start exam</button><button className="btn secondary" onClick={() => navigate('/exams')}>Back to exams</button></div>
+  </section>
   if (expired) return <CompletionCard title="Time is up" message="Your attempt was marked as expired." onBack={() => navigate('/exams')}/>
-  if (submitted) return <CompletionCard title="Exam submitted" message="Your PDF exam attempt was recorded. This paper is not automatically graded online." onBack={() => navigate('/exams')}/>
-  if (result) return <CompletionCard title="Exam submitted" message={result.review_required ? 'Your answers are submitted. Descriptive answers need teacher review before the final result is published.' : 'Your answers are submitted. The teacher will publish your result when it is ready.'} onBack={() => navigate('/exams')}/>
+  if (submitted) return <CompletionCard title="Exam submitted" message={`${submittedForTabSwitches ? `Your exam was submitted after more than ${TAB_SWITCHES_ALLOWED} detected tab switches. Monitoring signals are indicators, not proof of misconduct.` : 'Your PDF exam attempt was recorded. This paper is not automatically graded online.'}${unsyncedMonitoringMessage}`} onBack={() => navigate('/exams')}/>
+  if (result) return <CompletionCard title="Exam submitted" message={`${submittedForTabSwitches ? `Your exam was submitted after more than ${TAB_SWITCHES_ALLOWED} detected tab switches. Monitoring signals are indicators, not proof of misconduct.` : result.review_required ? 'Your answers are submitted. Descriptive answers need teacher review before the final result is published.' : 'Your answers are submitted. The teacher will publish your result when it is ready.'}${unsyncedMonitoringMessage}`} onBack={() => navigate('/exams')}/>
 
   const pdfOnly = paper?.exam_type === 'pdf'
   return <>
@@ -204,10 +640,12 @@ export function ExamRoom() {
     </header>
     {error && <div className="error">{error}</div>}
 
-    {exam.exam.monitoring_enabled && <section className="notice monitoring-notice">
-      <div className="row between"><div className="row"><ShieldAlert size={19}/><div><b>Exam monitoring is on</b><div className="small">We record when this tab is hidden, the window loses focus, and any optional camera status or face-count flags. These signals are for teacher review and do not automatically determine misconduct or your result.</div></div></div><span className="badge">{monitorWarnings} events</span></div>
-      <div className="row between monitoring-camera-row"><div><b><Camera size={15}/> Camera: {cameraStatus}</b><div className="small">No video is recorded or uploaded. Camera permission is optional and requested only if you choose to start it{exam.exam.camera_required ? ' (your teacher requested it)' : ''}.</div></div>{cameraStream ? <button type="button" className="btn secondary" onClick={stopCamera}>Turn camera off</button> : <button type="button" className="btn secondary" onClick={startCamera}>Give permission and start camera</button>}</div>
-      {cameraStream && <video ref={videoRef} autoPlay playsInline muted className="monitor-camera-preview" aria-label="Local camera preview"/>}
+    {(exam.exam.monitoring_enabled || exam.exam.camera_required) && <section className="notice monitoring-notice">
+      <div className="row between"><div className="row"><ShieldAlert size={19}/><div><b>{exam.exam.monitoring_enabled ? 'Exam monitoring is on' : 'Camera is required'}</b><div className="small">Tab and camera signals are review indicators, not proof of misconduct. Video stays on this device and is not recorded or uploaded.</div></div></div><span className="badge">{monitorWarnings} events synced this session</span></div>
+      {exam.exam.monitoring_enabled && <p className="small">Tab switches detected: {tabSwitches} · tab events synced this session: {savedTabSwitches} · pending sync: {monitoringPending}. After {TAB_SWITCHES_ALLOWED} allowed switches, the next detected switch submits the exam.</p>}
+      {monitoringStorageWarning && <p className="small">{monitoringStorageWarning}</p>}
+      <div className="row between monitoring-camera-row"><div><b><Camera size={15}/> Permission: {cameraPermissionStatus} · stream: {cameraStreamStatus}</b><div className="small">Face checks: {faceDetectionStatus}. Inference runs locally; detector assets load from Google and jsDelivr. Camera video is not transmitted. Signals are not proof of misconduct.</div></div>{cameraStream ? (!exam.exam.camera_required && <button type="button" className="btn secondary" onClick={stopCamera}>Turn camera off</button>) : <button type="button" className="btn secondary" disabled={cameraPermissionStatus === 'Requesting permission'} onClick={startCamera}>{cameraPermissionStatus === 'Granted' ? 'Restart camera' : 'Give permission and start camera'}</button>}</div>
+      <video ref={videoRef} autoPlay playsInline muted hidden={!cameraStream} className="monitor-camera-preview" aria-label="Local camera preview"/>
     </section>}
 
     {pdfOnly ? <section className="card pdf-student-card">
